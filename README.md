@@ -49,14 +49,7 @@ Open http://localhost:3000. `npm run dev` uses a local copy of the database (sto
 
 The app runs on Cloudflare Workers (via the [OpenNext adapter](https://opennext.js.org/cloudflare)) with a D1 database. `wrangler.jsonc` holds the config.
 
-**Connected to GitHub (Workers Builds):** in the Cloudflare dashboard, open the `vendorpay` Worker → **Settings → Build**, and set:
-
-| Setting | Value |
-|---|---|
-| Build command | `npx opennextjs-cloudflare build` |
-| Deploy command | `npx wrangler deploy` |
-
-Every push to `main` then builds and deploys. On the first deploy, Wrangler creates the `vendorpay-db` D1 database automatically. The app creates its tables and seeds the six demo vendors on the first visit.
+**Connected to GitHub (Workers Builds):** no build settings needed. Leave the Build command empty and keep the Deploy command as `npx wrangler deploy`. When Cloudflare installs dependencies, `scripts/ci-build.mjs` detects Workers Builds (`WORKERS_CI=1`) and builds the app. Every push to `main` then builds and deploys. On the first deploy, Wrangler creates the `vendorpay-db` D1 database automatically. The app creates its tables and seeds the six demo vendors on the first visit.
 
 **From your computer instead:** `npx wrangler login`, then `npm run deploy`.
 
