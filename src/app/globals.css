@@ -1,26 +1,96 @@
 @import "tailwindcss";
 
+/* Market-stall palette: warm paper, chili, marigold, nopal green, rosa mexicano. */
+@theme {
+  --color-paper: #fff4e2;
+  --color-paper-2: #fbe3bd;
+  --color-ink: #22150d;
+  --color-ink-soft: #5b4636;
+  --color-chili: #c0360c;
+  --color-chili-dark: #962a09;
+  --color-marigold: #f5a524;
+  --color-nopal: #1d6b43;
+  --color-rosa: #d1206a;
+  --color-sky: #0e6e8c;
+
+  --font-display: var(--font-lilita), "Arial Rounded MT Bold", sans-serif;
+  --font-sans: var(--font-atkinson), system-ui, sans-serif;
+
+  --shadow-block: 4px 4px 0 0 var(--color-ink);
+  --shadow-block-sm: 2px 2px 0 0 var(--color-ink);
+
+  --animate-rise: rise 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  --animate-pop: pop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+  --animate-sway: sway 3.5s ease-in-out infinite alternate;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+}
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.6); }
+}
+@keyframes sway {
+  from { transform: rotate(-1.5deg); }
+  to { transform: rotate(1.5deg); }
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  color-scheme: light; /* Built for bright outdoor light; no dark theme on purpose. */
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-paper);
+  /* Faint woven-mat texture. */
+  background-image:
+    repeating-linear-gradient(45deg, rgb(34 21 13 / 0.025) 0 2px, transparent 2px 9px),
+    repeating-linear-gradient(-45deg, rgb(34 21 13 / 0.025) 0 2px, transparent 2px 9px);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Chunky sign-painted controls. */
+@utility block-card {
+  background: white;
+  border: 2.5px solid var(--color-ink);
+  border-radius: 1.25rem;
+  box-shadow: var(--shadow-block);
+}
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  min-height: 3.75rem;
+  padding: 0 1.4rem;
+  border: 2.5px solid var(--color-ink);
+  border-radius: 1.1rem;
+  box-shadow: var(--shadow-block);
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  letter-spacing: 0.01em;
+  transition: transform 0.08s, box-shadow 0.08s;
+  &:active:not(:disabled) {
+    transform: translate(3px, 3px);
+    box-shadow: 1px 1px 0 0 var(--color-ink);
+  }
+  &:disabled {
+    opacity: 0.5;
+  }
+  &:focus-visible {
+    outline: 3px solid var(--color-sky);
+    outline-offset: 3px;
+  }
+}
+
+.leaflet-container {
+  font-family: var(--font-sans);
+  background: var(--color-paper-2);
+}
+
+.vp-pin {
+  background: none;
+  border: none;
 }
