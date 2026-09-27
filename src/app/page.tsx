@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { MapPin, Store } from "lucide-react";
 import { PapelPicado, Simulated } from "@/components/ui";
-import { listVendors } from "@/lib/store";
+import { countOpenVendors } from "@/lib/store";
 import { connection } from "next/server";
 
 export default async function Home() {
   await connection(); // live data: render per request
-  const openCount = listVendors().filter((v) => v.isOpen).length;
+  const openCount = await countOpenVendors();
 
   return (
     <main className="flex flex-1 flex-col px-5 pb-8">

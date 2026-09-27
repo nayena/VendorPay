@@ -5,13 +5,19 @@ import { TransactionList } from "@/components/TransactionList";
 import { Simulated, TopBar, TrustBadge } from "@/components/ui";
 import { money } from "@/lib/format";
 import { requireVendor } from "@/lib/session";
+import type { Circle } from "@/lib/types";
 import { circleFor, completedSales, getVendor, todaySales, transactionsFor } from "@/lib/store";
 import { LiveRefresh, OpenToggle } from "./DashboardClient";
 
 export default async function Dashboard() {
   const vendor = await requireVendor();
-  const today = todaySales(vendor.id);
-  const circle = circleFor(vendor.id);
+  const [today, circle, sales, recent] = await Promise.all([
+    todaySales(vendor.id),
+    circleFor(vendor.id),
+    completedSales(vendor.id),
+    transactionsFor(vendor.id, 12),
+  ]);
+  const recipient = circle ? await getVendor(circle.memberIds[circle.round]) : null;
 
   return (
     <main className="flex flex-1 flex-col">
@@ -29,7 +35,7 @@ export default async function Dashboard() {
 
       <div className="grid gap-5 px-4 pb-10">
         <div className="-mt-2 flex items-center gap-2">
-          <TrustBadge sales={completedSales(vendor.id)} />
+          <TrustBadge sales={sales} />
           <Simulated />
         </div>
 
@@ -64,7 +70,7 @@ export default async function Dashboard() {
           <span className="min-w-0 flex-1">
             <span className="block font-display text-xl leading-tight">Savings circle</span>
             <span className="block text-sm font-bold text-ink-soft">
-              {circle ? circleStatus(circle, vendor.id) : "Save together with other vendors"}
+              {circle ? circleStatus(circle, vendor.id, recipient?.name) : "Save together with other vendors"}
             </span>
           </span>
           <ChevronRight className="size-6 shrink-0" strokeWidth={2.5} />
@@ -77,16 +83,15 @@ export default async function Dashboard() {
               <span className="size-2 animate-pulse rounded-full bg-nopal" /> live
             </span>
           </h2>
-          <TransactionList items={transactionsFor(vendor.id, 12)} />
+          <TransactionList items={recent} />
         </section>
       </div>
     </main>
   );
 }
 
-function circleStatus(circle: NonNullable<ReturnType<typeof circleFor>>, vendorId: string) {
-  const recipient = getVendor(circle.memberIds[circle.round]);
+function circleStatus(circle: Circle, vendorId: string, recipientName?: string) {
   if (circle.memberIds[circle.round] === vendorId) return "It's your turn to get the pot!";
   if (!circle.paidThisRound.includes(vendorId)) return `Chip in ${money(circle.contribution)} this week`;
-  return `You're paid up · ${recipient?.name.split(" ")[0] ?? "Next"} gets the pot`;
+  return `You're paid up · ${recipientName?.split(" ")[0] ?? "Next"} gets the pot`;
 }

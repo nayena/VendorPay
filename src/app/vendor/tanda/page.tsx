@@ -2,15 +2,15 @@ import { Check, Clock, Crown } from "lucide-react";
 import { CategoryChip, Simulated, TopBar } from "@/components/ui";
 import { money } from "@/lib/format";
 import { requireVendor } from "@/lib/session";
-import { circleFor, getVendor, openCircles } from "@/lib/store";
+import { circleFor, getVendors, openCircles } from "@/lib/store";
 import { CircleButton } from "./CircleActions";
 
 export default async function TandaPage() {
   const vendor = await requireVendor();
-  const circle = circleFor(vendor.id);
+  const circle = await circleFor(vendor.id);
 
   if (!circle) {
-    const available = openCircles();
+    const available = await openCircles();
     return (
       <main className="flex flex-1 flex-col">
         <TopBar back="/vendor" title="Savings circle" right={<Simulated />} />
@@ -34,7 +34,7 @@ export default async function TandaPage() {
     );
   }
 
-  const members = circle.memberIds.map((id) => getVendor(id)).filter((v) => v !== null);
+  const members = await getVendors(circle.memberIds);
   const recipient = members[circle.round];
   const pot = circle.contribution * members.length;
   const iPaid = circle.paidThisRound.includes(vendor.id);

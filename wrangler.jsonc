@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vendorpay",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  // All app data (vendors, payments, savings circles) lives here.
+  // No database_id: Wrangler creates the database on the first deploy.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vendorpay-db"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

@@ -176,14 +176,15 @@ export function seed(now = Date.now()) {
   return { vendors: allVendors, transactions: allTx, circles: [circle] };
 }
 
-function msSinceMidnight(now: number) {
+/** Milliseconds since local midnight in the app's city. */
+export function msSinceMidnight(now: number) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: CITY.timeZone,
     hour: "numeric",
     minute: "numeric",
+    second: "numeric",
     hourCycle: "h23",
   }).formatToParts(now);
-  const h = Number(parts.find((p) => p.type === "hour")!.value);
-  const m = Number(parts.find((p) => p.type === "minute")!.value);
-  return (h * 60 + m) * 60_000;
+  const get = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  return ((get("hour") * 60 + get("minute")) * 60 + get("second")) * 1000 + (now % 1000);
 }

@@ -22,12 +22,12 @@ export async function sendCode(rawPhone: string): Promise<Result<{ code: string;
   const phone = normalizePhone(rawPhone);
   if (phone.length !== 10) return { ok: false, error: "Enter a 10-digit phone number." };
   // A real app would text this code. Here it is returned so the UI can show a fake SMS.
-  return { ok: true, phone, code: store.issueOtp(phone) };
+  return { ok: true, phone, code: await store.issueOtp(phone) };
 }
 
 export async function verifyCode(phone: string, code: string): Promise<Result> {
-  if (!store.checkOtp(phone, code.trim())) return { ok: false, error: "That code doesn't match. Try again." };
-  const existing = store.getVendorByPhone(phone);
+  if (!(await store.checkOtp(phone, code.trim()))) return { ok: false, error: "That code doesn't match. Try again." };
+  const existing = await store.getVendorByPhone(phone);
   if (existing) {
     await session.signIn(existing.id);
     redirect("/vendor");
@@ -37,7 +37,7 @@ export async function verifyCode(phone: string, code: string): Promise<Result> {
 }
 
 export async function demoSignIn(vendorId: string) {
-  if (!store.getVendor(vendorId)) return;
+  if (!(await store.getVendor(vendorId))) return;
   await session.signIn(vendorId);
   redirect("/vendor");
 }
@@ -63,7 +63,8 @@ export async function createStall(input: {
   if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) return { ok: false, error: "Tap the map to set your spot." };
   let id: string;
   try {
-    id = store.createVendor({
+    id = (
+      await store.createVendor({
       phone,
       name,
       ownerName: input.ownerName.trim().slice(0, 40) || name,
@@ -71,7 +72,8 @@ export async function createStall(input: {
       spot: input.spot.trim().slice(0, 60) || "Ask around. I'm nearby!",
       lat: input.lat,
       lng: input.lng,
-    }).id;
+      })
+    ).id;
   } catch (e) {
     return fail(e);
   }
@@ -85,7 +87,7 @@ export async function createStall(input: {
 export async function toggleOpen(isOpen: boolean): Promise<Result> {
   const vendor = await session.currentVendor();
   if (!vendor) return { ok: false, error: "Please sign in again." };
-  store.setOpen(vendor.id, isOpen);
+  await store.setOpen(vendor.id, isOpen);
   refreshAll();
   return { ok: true };
 }
@@ -96,7 +98,7 @@ export async function payVendor(vendorId: string, amount: number): Promise<Resul
   try {
     // Pretend we're talking to a payment network.
     await new Promise((r) => setTimeout(r, 900));
-    const tx = store.pay(vendorId, amount);
+    const tx = await store.pay(vendorId, amount);
     refreshAll();
     return { ok: true, receipt: tx.id.toUpperCase(), at: tx.createdAt };
   } catch (e) {
@@ -106,11 +108,11 @@ export async function payVendor(vendorId: string, amount: number): Promise<Resul
 
 // ---------- savings circle ----------
 
-async function withVendor(fn: (vendorId: string) => void): Promise<Result> {
+async function withVendor(fn: (vendorId: string) => Promise<void>): Promise<Result> {
   const vendor = await session.currentVendor();
   if (!vendor) return { ok: false, error: "Please sign in again." };
   try {
-    fn(vendor.id);
+    await fn(vendor.id);
   } catch (e) {
     return fail(e);
   }

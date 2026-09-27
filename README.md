@@ -6,12 +6,16 @@ Set in Mexico City's Centro Histórico, with six fictional vendors already seede
 
 ## Run it
 
+Needs **Node.js 22+** (Cloudflare's tooling requires it).
+
 ```bash
 npm install
 npm run dev
 ```
 
-Open http://localhost:3000. It's designed for phones: use your browser's device toolbar, or open `http://<your-computer's-LAN-IP>:3000` on a phone on the same Wi-Fi. The QR codes then point at that address, so you can scan them with a real phone camera.
+Open http://localhost:3000. `npm run dev` uses a local copy of the database (stored in `.wrangler/`). It creates itself and fills with demo data on the first visit. The app is designed for phones: use your browser's device toolbar, or open `http://<your-computer's-LAN-IP>:3000` on a phone on the same Wi-Fi. The QR codes then point at that address, so you can scan them with a real phone camera.
+
+`npm run preview` builds and runs the app in Cloudflare's actual runtime locally, the closest thing to production.
 
 ## Try it in two minutes
 
@@ -27,7 +31,7 @@ Open http://localhost:3000. It's designed for phones: use your browser's device 
 | Money / payments | **Simulated.** No payment processor. Paying just adds to the vendor's in-app balance after a fake ~1 second "network" delay. |
 | SMS / USSD | **Simulated.** The one-time code is shown on screen as a fake text message. Nothing is sent. |
 | Sign-in / auth | **Simulated.** A plain cookie holds the vendor id. Not secure. |
-| Database | **Simulated.** Everything lives in server memory and resets when the server restarts (`src/lib/seed.ts`). |
+| Database | **Real.** Cloudflare D1 (SQLite). Data is shared by everyone and survives restarts. The seeded vendors and history are fictional (`src/lib/seed.ts`). |
 | Savings circle payouts | **Simulated.** Contributions and payouts move pretend balances. "Everyone else pays in" is a demo shortcut. |
 | Map | **Real.** Leaflet with live OpenStreetMap tiles. Vendor locations are fictional. |
 | QR codes | **Real.** Scannable codes linking to each vendor's pay page. |
@@ -35,23 +39,34 @@ Open http://localhost:3000. It's designed for phones: use your browser's device 
 
 ## Project layout
 
-- `src/lib/store.ts`: in-memory data and all business rules (payments, trust, savings circle)
+- `src/lib/store.ts`: database access and all business rules (payments, savings circle). Creates the tables and seeds demo data automatically
 - `src/lib/seed.ts`: seeded vendors, 30 days of history, one savings circle
 - `src/app/actions.ts`: server actions called by the UI
 - `src/app/map`: customer map · `src/app/v/[id]`: vendor profile and QR · `src/app/v/[id]/pay`: payment flow
 - `src/app/vendor`: vendor dashboard, `start` (phone sign-in), `setup` (onboarding), `qr`, `tanda` (savings circle)
 
-## Deploy (so testers only need a link)
+## Deploy to Cloudflare
 
-The repo includes a Render Blueprint (`render.yaml`), so there is nothing to configure by hand.
+The app runs on Cloudflare Workers (via the [OpenNext adapter](https://opennext.js.org/cloudflare)) with a D1 database. `wrangler.jsonc` holds the config.
 
-1. Sign in at [render.com](https://render.com) with your GitHub account.
-2. Open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/nayena/VendorPay)** (or *New → Blueprint* and pick this repo).
-3. Click **Apply**. The first build takes a few minutes, and then you get a URL like `https://vendorpay.onrender.com` to send to testers.
+**Connected to GitHub (Workers Builds):** in the Cloudflare dashboard, open the `vendorpay` Worker → **Settings → Build**, and set:
 
-Every push to `main` redeploys automatically.
+| Setting | Value |
+|---|---|
+| Build command | `npx opennextjs-cloudflare build` |
+| Deploy command | `npx wrangler deploy` |
 
-Things to know:
-- **Data resets** on every deploy or restart, back to the six seeded vendors. That's expected for this prototype.
-- **Free plan sleeps** after about 15 idle minutes. The next visit takes ~30–60 seconds to wake it up, and the data resets. Switch the service to the *Starter* plan to keep it awake during a testing session.
-- **Must be one server.** Data lives in server memory, so don't run it on serverless hosting (e.g. Vercel) or scale it to more than one instance. Any host that runs `npm ci && npm run build` then `npm start` works (Railway, Fly.io, a VPS). The app listens on `$PORT`.
+Every push to `main` then builds and deploys. On the first deploy, Wrangler creates the `vendorpay-db` D1 database automatically. The app creates its tables and seeds the six demo vendors on the first visit.
+
+**From your computer instead:** `npx wrangler login`, then `npm run deploy`.
+
+### Reset the demo data
+
+Clears everything testers created and puts back the six demo vendors (within ~30 seconds of the next visit):
+
+```bash
+npx wrangler login     # once
+npm run reset-demo
+```
+
+`npm run reset-demo:local` does the same for your local dev database.

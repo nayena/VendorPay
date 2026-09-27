@@ -2,14 +2,14 @@ import { redirect } from "next/navigation";
 import { demoSignIn } from "@/app/actions";
 import { CategoryChip, Simulated, TopBar } from "@/components/ui";
 import { currentVendor } from "@/lib/session";
-import { getVendor } from "@/lib/store";
+import { getVendors } from "@/lib/store";
 import { PhoneSignIn } from "./PhoneSignIn";
 
 const DEMO_IDS = ["lupe", "beto", "mercedes"];
 
 export default async function StartPage() {
   if (await currentVendor()) redirect("/vendor");
-  const demos = DEMO_IDS.map(getVendor).filter((v) => v !== null);
+  const demos = await getVendors(DEMO_IDS);
 
   return (
     <main className="flex flex-1 flex-col">

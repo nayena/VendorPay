@@ -5,7 +5,7 @@ import { PayFlow } from "./PayFlow";
 
 export default async function PayPage({ params }: PageProps<"/v/[id]/pay">) {
   const { id } = await params;
-  const vendor = getVendor(id);
+  const vendor = await getVendor(id);
   if (!vendor) notFound();
 
   return (

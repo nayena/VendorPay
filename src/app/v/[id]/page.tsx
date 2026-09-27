@@ -8,8 +8,9 @@ import { completedSales, getVendor } from "@/lib/store";
 
 export default async function VendorProfile({ params }: PageProps<"/v/[id]">) {
   const { id } = await params;
-  const vendor = getVendor(id);
+  const vendor = await getVendor(id);
   if (!vendor) notFound();
+  const sales = await completedSales(vendor.id);
   const payPath = `/v/${vendor.id}/pay`;
 
   return (
@@ -28,7 +29,7 @@ export default async function VendorProfile({ params }: PageProps<"/v/[id]">) {
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <OpenDot open={vendor.isOpen} />
-          <TrustBadge sales={completedSales(vendor.id)} />
+          <TrustBadge sales={sales} />
         </div>
         <p className="mt-3 flex items-center gap-1.5 text-lg">
           <MapPin className="size-5 shrink-0 text-chili" strokeWidth={2.5} /> {vendor.spot}
