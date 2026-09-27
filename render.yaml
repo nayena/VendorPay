@@ -1,0 +1,17 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# One long-running Node server. The app keeps its data in memory, so it must
+# run as a single instance (not serverless). Data resets on every restart/deploy.
+services:
+  - type: web
+    name: vendorpay
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.6
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"

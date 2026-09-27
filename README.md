@@ -41,6 +41,17 @@ Open http://localhost:3000. It's designed for phones: use your browser's device 
 - `src/app/map`: customer map · `src/app/v/[id]`: vendor profile and QR · `src/app/v/[id]/pay`: payment flow
 - `src/app/vendor`: vendor dashboard, `start` (phone sign-in), `setup` (onboarding), `qr`, `tanda` (savings circle)
 
-## Hosting for testers
+## Deploy (so testers only need a link)
 
-Because data lives in server memory, host it as **one long-running server** (e.g. Render, Railway or Fly.io with `npm run build && npm start`), not serverless. On Vercel, separate instances wouldn't share data. A real database is the next step before wider testing.
+The repo includes a Render Blueprint (`render.yaml`), so there is nothing to configure by hand.
+
+1. Sign in at [render.com](https://render.com) with your GitHub account.
+2. Open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/nayena/VendorPay)** (or *New → Blueprint* and pick this repo).
+3. Click **Apply**. The first build takes a few minutes, and then you get a URL like `https://vendorpay.onrender.com` to send to testers.
+
+Every push to `main` redeploys automatically.
+
+Things to know:
+- **Data resets** on every deploy or restart, back to the six seeded vendors. That's expected for this prototype.
+- **Free plan sleeps** after about 15 idle minutes. The next visit takes ~30–60 seconds to wake it up, and the data resets. Switch the service to the *Starter* plan to keep it awake during a testing session.
+- **Must be one server.** Data lives in server memory, so don't run it on serverless hosting (e.g. Vercel) or scale it to more than one instance. Any host that runs `npm ci && npm run build` then `npm start` works (Railway, Fly.io, a VPS). The app listens on `$PORT`.
