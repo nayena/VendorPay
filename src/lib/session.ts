@@ -36,3 +36,18 @@ export async function setVerifiedPhone(phone: string) {
 export async function verifiedPhone() {
   return (await cookies()).get(VERIFIED_PHONE)?.value ?? null;
 }
+
+// Simulated customer identity: an anonymous id per browser. It stands in for the paying
+// account (card, wallet) in a real system, so trust can count *different* customers and
+// only the customer who paid can rate that payment.
+const CUSTOMER = "vp_customer";
+
+/** Only call from a Server Function: it may need to set the cookie. */
+export async function customerId() {
+  const jar = await cookies();
+  const existing = jar.get(CUSTOMER)?.value;
+  if (existing && /^c[a-f0-9]{16}$/.test(existing)) return existing;
+  const id = "c" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  jar.set(CUSTOMER, id, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 365 });
+  return id;
+}

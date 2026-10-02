@@ -1,26 +1,30 @@
 import Link from "next/link";
 import { MapPin, Store } from "lucide-react";
-import { PapelPicado, Simulated } from "@/components/ui";
+import { LangToggle, PapelPicado, Simulated } from "@/components/ui";
+import { getT } from "@/lib/lang";
 import { countOpenVendors } from "@/lib/store";
 import { connection } from "next/server";
 
 export default async function Home() {
   await connection(); // live data: render per request
-  const openCount = await countOpenVendors();
+  const [openCount, t] = await Promise.all([countOpenVendors(), getT()]);
 
   return (
     <main className="flex flex-1 flex-col px-5 pb-8">
       <PapelPicado className="-mx-5 mb-8" count={11} />
 
       <div className="animate-rise">
-        <p className="mb-2 flex items-center gap-2 text-sm font-bold text-ink-soft">
-          Mexico City · Centro <Simulated />
-        </p>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <p className="flex items-center gap-2 text-sm font-bold text-ink-soft">
+            {t("home.place")} <Simulated />
+          </p>
+          <LangToggle />
+        </div>
         <h1 className="font-display text-[3.4rem] leading-[0.95] text-chili">
           Vendor<span className="text-ink">Pay</span>
         </h1>
         <p className="mt-3 max-w-[18rem] text-xl leading-snug">
-          Pay street vendors with your phone. No bank needed.
+          {t("home.tagline")}
         </p>
       </div>
 
@@ -33,9 +37,9 @@ export default async function Home() {
             <MapPin className="size-9 text-chili" strokeWidth={2.5} />
           </span>
           <span>
-            <span className="block font-display text-3xl leading-none">I&apos;m buying</span>
+            <span className="block font-display text-3xl leading-none">{t("home.buying")}</span>
             <span className="mt-1 block text-base font-bold">
-              {openCount} stalls open near you
+              {t.n("home.open", openCount)}
             </span>
           </span>
         </Link>
@@ -48,14 +52,14 @@ export default async function Home() {
             <Store className="size-9 text-nopal" strokeWidth={2.5} />
           </span>
           <span>
-            <span className="block font-display text-3xl leading-none">I&apos;m selling</span>
-            <span className="mt-1 block text-base font-bold">Start with just your phone number</span>
+            <span className="block font-display text-3xl leading-none">{t("home.selling")}</span>
+            <span className="mt-1 block text-base font-bold">{t("home.sellingSub")}</span>
           </span>
         </Link>
       </div>
 
       <p className="mt-auto pt-10 text-center text-sm text-ink-soft">
-        Prototype. Money, SMS and sign-in are all pretend.
+        {t("home.footer")}
       </p>
     </main>
   );

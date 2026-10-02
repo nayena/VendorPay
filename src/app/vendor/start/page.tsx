@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { demoSignIn } from "@/app/actions";
 import { CategoryChip, Simulated, TopBar } from "@/components/ui";
+import { getT } from "@/lib/lang";
 import { currentVendor } from "@/lib/session";
 import { getVendors } from "@/lib/store";
 import { PhoneSignIn } from "./PhoneSignIn";
@@ -9,23 +10,23 @@ const DEMO_IDS = ["lupe", "beto", "mercedes"];
 
 export default async function StartPage() {
   if (await currentVendor()) redirect("/vendor");
-  const demos = await getVendors(DEMO_IDS);
+  const [demos, t] = await Promise.all([getVendors(DEMO_IDS), getT()]);
 
   return (
     <main className="flex flex-1 flex-col">
       <TopBar back="/" right={<Simulated />} />
       <div className="px-5 pb-10">
         <h1 className="animate-rise font-display text-4xl leading-tight">
-          Sell with your <span className="text-chili">phone</span>
+          {t("start.title1")} <span className="text-chili">{t("start.title2")}</span>
         </h1>
-        <p className="mt-2 text-lg">No bank account. No paperwork. Just your number.</p>
+        <p className="mt-2 text-lg">{t("start.sub")}</p>
 
         <div className="mt-8">
           <PhoneSignIn />
         </div>
 
         <div className="mt-12">
-          <h2 className="font-display text-xl">Just looking? Try a demo stall</h2>
+          <h2 className="font-display text-xl">{t("start.demo")}</h2>
           <div className="mt-3 grid gap-3">
             {demos.map((v) => (
               <form key={v.id} action={demoSignIn.bind(null, v.id)}>

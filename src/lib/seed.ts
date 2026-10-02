@@ -1,4 +1,5 @@
-import type { Circle, Transaction, Vendor } from "./types";
+import { customerTag } from "./format";
+import type { Circle, MenuItem, Transaction, Vendor } from "./types";
 
 // Centro Histórico, Mexico City.
 export const CITY = {
@@ -7,9 +8,10 @@ export const CITY = {
   timeZone: "America/Mexico_City",
 };
 
-const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
-type SeedVendor = Omit<Vendor, "joinedAt" | "balance"> & {
+type SeedVendor = Omit<Vendor, "joinedAt" | "balance" | "lastActiveAt" | "autoClosed" | "approxLocation" | "demo"> & {
   sales: number; // completed payments in the last 30 days
   avgTicket: number;
   todaySales: number;
@@ -111,14 +113,29 @@ function rng(seed: number) {
   };
 }
 
-function customerTag(rand: () => number) {
-  return "•• " + String(Math.floor(1000 + rand() * 9000));
+const MENUS: Record<string, [string, number][]> = {
+  lupe: [["Taco al pastor", 18], ["Taco de suadero", 18], ["Gringa", 45], ["Agua de horchata", 25]],
+  beto: [["Elote", 35], ["Esquite chico", 30], ["Esquite grande", 45]],
+  paty: [["Jugo de naranja", 30], ["Licuado de plátano", 40], ["Verde", 35]],
+  xochitl: [["Pulsera tejida", 80], ["Muñeca de trapo", 220], ["Bolsa bordada", 350]],
+  guera: [["Fruta picada", 40], ["Mango con chile", 35], ["Kilo de jitomate", 28]],
+  mercedes: [["Ramo chico", 80], ["Ramo de cempasúchil", 120]],
+};
+
+export interface Rating {
+  id: string;
+  vendorId: string;
+  txId: string;
+  stars: number;
+  createdAt: number;
 }
 
 export function seed(now = Date.now()) {
   const rand = rng(42);
   const allTx: Transaction[] = [];
   const allVendors: Vendor[] = [];
+  const ratings: Rating[] = [];
+  const menuItems: MenuItem[] = [];
   let txN = 0;
 
   // Keep "today" sales inside today even when the server starts early in the morning.
@@ -127,22 +144,47 @@ export function seed(now = Date.now()) {
   for (const v of vendors) {
     const { sales, avgTicket, todaySales, ...vendor } = v;
     let balance = 0;
+    // A pool of customers with a few regulars, so "different customers" < sales.
+    const pool = Math.max(3, Math.round(sales * 0.55));
+    const regulars = Math.max(1, Math.round(pool * 0.2));
     for (let i = 0; i < sales; i++) {
       const isToday = i < todaySales && todayWindow > 0;
-      const age = isToday ? rand() * todayWindow : todayWindow + rand() * 29 * DAY;
+      // Earlier days: a random day in the last 29, during market hours (8:00–20:00).
+      const age = isToday
+        ? rand() * todayWindow
+        : msSinceMidnight(now) + Math.floor(rand() * 29) * DAY + (16 - rand() * 12) * HOUR;
       const amount = Math.max(10, Math.round((avgTicket * (0.5 + rand())) / 5) * 5);
       balance += amount;
-      allTx.push({
+      // The first few sales go to distinct customers, so even a tiny stall has a real count.
+      const customer = i < 3 ? i : Math.floor(rand() * (rand() < 0.4 ? regulars : pool));
+      const customerId = `c-${v.id}-${customer}`;
+      const tx: Transaction = {
         id: `t${++txN}`,
         vendorId: v.id,
         kind: "payment",
         amount,
         createdAt: now - age,
-        from: customerTag(rand),
-      });
+        from: customerTag(customerId),
+        customerId,
+      };
+      allTx.push(tx);
+      if (rand() < 0.3) {
+        const r = rand();
+        const stars = r < 0.6 ? 5 : r < 0.9 ? 4 : r < 0.97 ? 3 : 2;
+        ratings.push({ id: `r${ratings.length + 1}`, vendorId: v.id, txId: tx.id, stars, createdAt: tx.createdAt + 120_000 });
+      }
     }
+    (MENUS[v.id] ?? []).forEach(([name, price], i) => menuItems.push({ id: `m-${v.id}-${i}`, vendorId: v.id, name, price }));
     // Vendors cash out regularly; the wallet holds roughly the last few days of sales.
-    allVendors.push({ ...vendor, balance: Math.round(balance * 0.18), joinedAt: now - 45 * DAY });
+    allVendors.push({
+      ...vendor,
+      balance: Math.round(balance * 0.18),
+      joinedAt: now - 45 * DAY,
+      lastActiveAt: now,
+      autoClosed: false,
+      approxLocation: false,
+      demo: true,
+    });
   }
 
   const circle: Circle = {
@@ -153,6 +195,7 @@ export function seed(now = Date.now()) {
     round: 1, // Lupe took last week's pot; Beto is up now
     cycle: 1,
     paidThisRound: ["lupe", "paty"],
+    autoPayIds: ["paty"],
   };
 
   // Last round's history: everyone paid in, Lupe received the pot.
@@ -173,7 +216,7 @@ export function seed(now = Date.now()) {
   }
 
   allTx.sort((a, b) => b.createdAt - a.createdAt);
-  return { vendors: allVendors, transactions: allTx, circles: [circle] };
+  return { vendors: allVendors, transactions: allTx, circles: [circle], ratings, menuItems };
 }
 
 /** Milliseconds since local midnight in the app's city. */

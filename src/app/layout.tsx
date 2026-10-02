@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Atkinson_Hyperlegible, Lilita_One } from "next/font/google";
+import { I18nProvider } from "@/components/I18n";
+import { getLang } from "@/lib/lang";
 import "./globals.css";
 
 // Lilita One reads like a hand-painted stall sign; Atkinson Hyperlegible was
@@ -18,11 +20,14 @@ export const viewport: Viewport = {
   themeColor: "#c0360c",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const lang = await getLang();
   return (
-    <html lang="en" className={`${lilita.variable} ${atkinson.variable} h-full antialiased`}>
+    <html lang={lang} className={`${lilita.variable} ${atkinson.variable} h-full antialiased`}>
       <body className="min-h-full">
-        <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col">{children}</div>
+        <I18nProvider lang={lang}>
+          <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col">{children}</div>
+        </I18nProvider>
       </body>
     </html>
   );

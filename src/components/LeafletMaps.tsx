@@ -2,10 +2,11 @@
 
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useEffect } from "react";
-import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { Fragment, useEffect } from "react";
+import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { CATEGORIES, trust } from "@/lib/format";
-import type { Category } from "@/lib/types";
+import type { Category, TrustStats } from "@/lib/types";
+import { useT } from "./I18n";
 
 export interface MapVendor {
   id: string;
@@ -13,8 +14,12 @@ export interface MapVendor {
   category: Category;
   lat: number;
   lng: number;
-  sales: number;
+  stats: TrustStats;
+  /** The pin is a fuzzed point; draw it as an area. */
+  approx?: boolean;
 }
+
+const NO_STATS: TrustStats = { sales: 0, customers: 0, ratingAvg: null, ratingCount: 0 };
 
 const TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
@@ -22,10 +27,10 @@ const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">Op
 const escape = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-function pinIcon(v: MapVendor, selected: boolean) {
+function pinIcon(v: MapVendor, selected: boolean, newLabel: string) {
   const c = CATEGORIES[v.category];
-  const t = trust(v.sales);
-  const rating = t.score === null ? "New" : `★ ${t.score.toFixed(1)}`;
+  const t = trust(v.stats);
+  const rating = t.score === null ? escape(newLabel) : `★ ${t.score.toFixed(1)}`;
   const size = selected ? 56 : 46;
   const shortName = v.name.length > 16 ? v.name.slice(0, 15) + "…" : v.name;
   return L.divIcon({
@@ -35,7 +40,7 @@ function pinIcon(v: MapVendor, selected: boolean) {
     html: `
       <div style="position:relative;width:${size}px;height:${size}px;${selected ? "z-index:10" : ""}">
         <div style="width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
-          background:${c.color};border:3px solid #22150d;box-shadow:3px 3px 0 #22150d;display:grid;place-items:center">
+          background:${c.color};border:3px ${v.approx ? "dashed" : "solid"} #22150d;${v.approx ? "opacity:.85;" : ""}box-shadow:3px 3px 0 #22150d;display:grid;place-items:center">
           <span style="transform:rotate(45deg);font-size:${selected ? 28 : 22}px;line-height:1">${c.emoji}</span>
         </div>
         <div style="position:absolute;top:${size + 6}px;left:50%;transform:translateX(-50%);white-space:nowrap;
@@ -66,6 +71,7 @@ export function VendorMap({
   selectedId: string | null;
   onSelect: (id: string | null) => void;
 }) {
+  const t = useT();
   const selected = vendors.find((v) => v.id === selectedId);
   return (
     <MapContainer center={center} zoom={15} zoomControl={false} className="size-full" attributionControl>
@@ -73,14 +79,23 @@ export function VendorMap({
       <ClickAway onClick={() => onSelect(null)} />
       <FlyTo target={selected ? [selected.lat, selected.lng] : null} />
       {vendors.map((v) => (
-        <Marker
-          key={v.id}
-          position={[v.lat, v.lng]}
-          icon={pinIcon(v, v.id === selectedId)}
-          zIndexOffset={v.id === selectedId ? 1000 : 0}
-          eventHandlers={{ click: () => onSelect(v.id) }}
-          title={v.name}
-        />
+        <Fragment key={v.id}>
+          {v.approx && (
+            <Circle
+              center={[v.lat, v.lng]}
+              radius={150}
+              pathOptions={{ color: "#22150d", weight: 2, dashArray: "6 6", fillColor: CATEGORIES[v.category].color, fillOpacity: 0.12 }}
+              interactive={false}
+            />
+          )}
+          <Marker
+            position={[v.lat, v.lng]}
+            icon={pinIcon(v, v.id === selectedId, t("trust.new"))}
+            zIndexOffset={v.id === selectedId ? 1000 : 0}
+            eventHandlers={{ click: () => onSelect(v.id) }}
+            title={v.name}
+          />
+        </Fragment>
       ))}
     </MapContainer>
   );
@@ -96,6 +111,15 @@ function PickHandler({ onPick }: { onPick: (lat: number, lng: number) => void })
   return null;
 }
 
+/** Keeps the pin in view when it moves from outside the map (e.g. "I'm here now"). */
+function Follow({ value }: { value: [number, number] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!map.getBounds().contains(value)) map.setView(value, map.getZoom());
+  }, [map, value]);
+  return null;
+}
+
 /** Map for choosing where a stall is: tap to move the pin. */
 export function PickSpotMap({
   value,
@@ -106,13 +130,15 @@ export function PickSpotMap({
   category: Category;
   onPick: (lat: number, lng: number) => void;
 }) {
+  const t = useT();
   return (
     <MapContainer center={value} zoom={16} zoomControl={false} className="size-full">
       <TileLayer url={TILES} attribution={ATTRIBUTION} />
       <PickHandler onPick={onPick} />
+      <Follow value={value} />
       <Marker
         position={value}
-        icon={pinIcon({ id: "me", name: "My stall", category, lat: value[0], lng: value[1], sales: 0 }, true)}
+        icon={pinIcon({ id: "me", name: t(`cat.${category}`), category, lat: value[0], lng: value[1], stats: NO_STATS }, true, t("trust.new"))}
       />
     </MapContainer>
   );
