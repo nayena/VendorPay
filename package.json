@@ -11,7 +11,8 @@
     "lint": "eslint",
     "reset-demo": "wrangler d1 execute vendorpay-db --remote --file scripts/reset-demo.sql",
     "reset-demo:local": "wrangler d1 execute vendorpay-db --local --file scripts/reset-demo.sql",
-    "postinstall": "node scripts/ci-build.mjs"
+    "postinstall": "node scripts/ci-build.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.6",
@@ -35,6 +36,7 @@
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "vitest": "^3.2.7",
     "wrangler": "^4.142.0"
   },
   "engines": {

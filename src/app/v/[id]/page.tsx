@@ -1,56 +1,157 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { MapPin, ScanLine } from "lucide-react";
+import { connection } from "next/server";
+import { ChevronRight, MapPin, ScanLine } from "lucide-react";
+import { CheckInButton, SaveButton, ShopperNav } from "@/components/discover";
 import { absoluteUrl, QrCode } from "@/components/QrCode";
 import { CategoryChip, OpenDot, TopBar, TrustBadge } from "@/components/ui";
-import { CATEGORIES } from "@/lib/format";
-import { completedSales, getVendor } from "@/lib/store";
+import { eventWhen } from "@/lib/city";
+import { EVENT_KINDS } from "@/lib/feed";
+import { money, stallCode } from "@/lib/format";
+import { getT } from "@/lib/lang";
+import { currentCustomerId, currentVendor } from "@/lib/session";
+import { canReview, eventsForVendor, getVendor, isSaved, menuFor, reviewsFor, trustStats } from "@/lib/store";
+import { ReviewForm, ReviewList } from "./Reviews";
+
+const serverNow = async () => Date.now();
 
 export default async function VendorProfile({ params }: PageProps<"/v/[id]">) {
+  await connection(); // live data: render per request
   const { id } = await params;
   const vendor = await getVendor(id);
   if (!vendor) notFound();
-  const sales = await completedSales(vendor.id);
+  const customerId = await currentCustomerId();
+  const [stats, menu, events, reviews, mayReview, saved, me, t] = await Promise.all([
+    trustStats(vendor.id),
+    menuFor(vendor.id),
+    eventsForVendor(vendor.id),
+    reviewsFor(vendor.id, customerId),
+    canReview(customerId, vendor.id),
+    isSaved(customerId, "vendor", vendor.id),
+    currentVendor(),
+    getT(),
+  ]);
+  const now = await serverNow();
   const payPath = `/v/${vendor.id}/pay`;
+  const ownStall = me?.id === vendor.id;
+  const myReview = reviews.find((r) => r.mine) ?? null;
 
   return (
-    <main className="flex flex-1 flex-col">
-      <TopBar back="/map" />
+    <main className="flex flex-1 flex-col pb-24">
+      <TopBar
+        back="/map"
+        right={
+          ownStall ? undefined : (
+            <div className="ml-auto">
+              <SaveButton type="vendor" id={vendor.id} saved={saved} />
+            </div>
+          )
+        }
+      />
       <div className="px-5 pb-10">
         <div className="flex animate-rise items-center gap-4">
           <CategoryChip category={vendor.category} big />
           <div className="min-w-0">
             <h1 className="font-display text-3xl leading-tight">{vendor.name}</h1>
             <p className="text-ink-soft">
-              {vendor.ownerName} · {CATEGORIES[vendor.category].label}
+              {vendor.ownerName} · {t(`cat.${vendor.category}`)}
             </p>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <OpenDot open={vendor.isOpen} />
-          <TrustBadge sales={sales} />
+          <TrustBadge stats={stats} />
         </div>
+        <p className="mt-2 text-sm text-ink-soft">
+          {t("trust.detail", { customers: stats.customers, ratings: stats.ratingCount })}
+          {stats.ratingAvg !== null && ` · ★ ${stats.ratingAvg.toFixed(1)}`}
+        </p>
         <p className="mt-3 flex items-center gap-1.5 text-lg">
-          <MapPin className="size-5 shrink-0 text-chili" strokeWidth={2.5} /> {vendor.spot}
+          <MapPin className="size-5 shrink-0 text-chili" strokeWidth={2.5} /> {vendor.approxLocation ? t("map.approx") : vendor.spot}
         </p>
 
         {/* Tapping the QR stands in for scanning it with a camera. */}
         <Link
           href={payPath}
           className="block-card mx-auto mt-6 block w-full max-w-[18rem] animate-pop p-4 [animation-delay:100ms]"
-          aria-label={`Pay ${vendor.name}`}
+          aria-label={t("profile.pay", { name: vendor.name })}
         >
           <QrCode url={await absoluteUrl(payPath)} className="aspect-square" />
           <p className="mt-3 flex items-center justify-center gap-2 font-display text-lg">
-            <ScanLine className="size-5" strokeWidth={2.5} /> Tap or scan to pay
+            <ScanLine className="size-5" strokeWidth={2.5} /> {t("profile.tap")}
+          </p>
+          <p className="mt-1 text-center text-sm font-bold text-ink-soft">
+            {t("profile.code")} <span className="font-display text-base tracking-widest text-ink">{stallCode(vendor.id)}</span>
           </p>
         </Link>
 
+        {menu.length > 0 && (
+          <section className="mt-6">
+            <h2 className="mb-2 font-display text-xl">{t("profile.menu")}</h2>
+            <ul className="block-card divide-y-2 divide-ink/10 overflow-hidden">
+              {menu.map((m) => (
+                <li key={m.id} className="flex justify-between gap-3 px-4 py-2.5 text-lg">
+                  <span>{m.name}</span>
+                  <span className="font-bold tabular-nums">{money(m.price)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <Link href={payPath} className="btn mt-6 w-full bg-chili text-white">
-          Pay {vendor.name.split(" ")[0]}
+          {t("profile.pay", { name: vendor.name.split(" ")[0] })}
         </Link>
+        {vendor.isOpen && !ownStall && <CheckInButton vendorId={vendor.id} className="mt-3" />}
+
+        {events.length > 0 && (
+          <section className="mt-7">
+            <h2 className="mb-2 font-display text-xl">{t("profile.events")}</h2>
+            <ul className="grid gap-3">
+              {events.map((e) => (
+                <li key={e.id}>
+                  <Link
+                    href={`/e/${e.id}`}
+                    className="block-card flex items-center gap-3 p-3 active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+                  >
+                    <span
+                      className="grid size-14 shrink-0 place-items-center rounded-2xl border-[2.5px] border-ink text-3xl"
+                      style={{ backgroundColor: EVENT_KINDS[e.kind].color + "33" }}
+                      aria-hidden
+                    >
+                      {EVENT_KINDS[e.kind].emoji}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-lg font-bold">{e.title}</span>
+                      <span className="block text-sm font-bold text-ink-soft">{eventWhen(t, e.startsAt, e.endsAt, now)}</span>
+                    </span>
+                    <ChevronRight className="size-6 shrink-0" strokeWidth={2.5} />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section className="mt-7">
+          <h2 className="mb-2 font-display text-xl">
+            {t("profile.reviews")} <span className="text-ink-soft">· {reviews.length}</span>
+          </h2>
+          {!ownStall &&
+            (mayReview ? (
+              <ReviewForm vendorId={vendor.id} mine={myReview} />
+            ) : (
+              <p className="rounded-2xl bg-paper-2 p-4 font-bold">{t("review.locked")}</p>
+            ))}
+          {reviews.length > 0 ? (
+            <ReviewList reviews={reviews} now={now} className="mt-3" />
+          ) : (
+            <p className="mt-3 text-ink-soft">{t("review.none")}</p>
+          )}
+        </section>
       </div>
+      <ShopperNav />
     </main>
   );
 }

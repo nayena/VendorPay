@@ -3,8 +3,10 @@
 import { useState, useTransition } from "react";
 import { LoaderCircle, MessageSquareText, Phone } from "lucide-react";
 import { sendCode, verifyCode } from "@/app/actions";
+import { useT } from "@/components/I18n";
 
 export function PhoneSignIn() {
+  const t = useT();
   const [phone, setPhone] = useState("");
   const [sent, setSent] = useState<{ phone: string; code: string } | null>(null);
   const [code, setCode] = useState("");
@@ -36,7 +38,7 @@ export function PhoneSignIn() {
     return (
       <form onSubmit={submitPhone} className="grid gap-4">
         <label className="grid gap-2">
-          <span className="font-display text-xl">Your phone number</span>
+          <span className="font-display text-xl">{t("phone.label")}</span>
           <span className="flex items-center gap-2 rounded-2xl border-[2.5px] border-ink bg-white px-4 shadow-block-sm focus-within:outline-3 focus-within:outline-sky">
             <Phone className="size-6 shrink-0 text-ink-soft" strokeWidth={2.5} />
             <span className="text-xl font-bold text-ink-soft">+52</span>
@@ -53,7 +55,7 @@ export function PhoneSignIn() {
         </label>
         {error && <p className="font-bold text-chili" role="alert">{error}</p>}
         <button disabled={pending} className="btn w-full bg-chili text-white">
-          {pending ? <LoaderCircle className="size-6 animate-spin" strokeWidth={3} /> : "Send me a code"}
+          {pending ? <LoaderCircle className="size-6 animate-spin" strokeWidth={3} /> : t("phone.send")}
         </button>
       </form>
     );
@@ -65,15 +67,15 @@ export function PhoneSignIn() {
       <div className="flex animate-pop items-start gap-3 rounded-2xl border-[2.5px] border-ink bg-ink p-4 text-white shadow-block">
         <MessageSquareText className="mt-0.5 size-6 shrink-0 text-marigold" strokeWidth={2.5} />
         <div>
-          <p className="text-xs font-bold uppercase tracking-wider text-marigold">Simulated SMS</p>
+          <p className="text-xs font-bold uppercase tracking-wider text-marigold">{t("phone.sms")}</p>
           <p className="text-lg">
-            Your VendorPay code is <strong className="font-display text-2xl tracking-widest">{sent.code}</strong>
+            {t("phone.smsBody")} <strong className="font-display text-2xl tracking-widest">{sent.code}</strong>
           </p>
         </div>
       </div>
 
       <label className="grid gap-2">
-        <span className="font-display text-xl">Type the 6-digit code</span>
+        <span className="font-display text-xl">{t("phone.codeLabel")}</span>
         <input
           inputMode="numeric"
           autoComplete="one-time-code"
@@ -86,10 +88,10 @@ export function PhoneSignIn() {
       </label>
       {error && <p className="font-bold text-chili" role="alert">{error}</p>}
       <button disabled={pending || code.length !== 6} className="btn w-full bg-chili text-white">
-        {pending ? <LoaderCircle className="size-6 animate-spin" strokeWidth={3} /> : "Continue"}
+        {pending ? <LoaderCircle className="size-6 animate-spin" strokeWidth={3} /> : t("continue")}
       </button>
       <button type="button" onClick={() => setSent(null)} className="text-center font-bold text-ink-soft underline">
-        Use a different number
+        {t("phone.other")}
       </button>
     </form>
   );
