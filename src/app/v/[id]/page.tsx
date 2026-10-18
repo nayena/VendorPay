@@ -1,22 +1,53 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { MapPin, ScanLine } from "lucide-react";
+import { connection } from "next/server";
+import { ChevronRight, MapPin, ScanLine } from "lucide-react";
+import { CheckInButton, SaveButton, ShopperNav } from "@/components/discover";
 import { absoluteUrl, QrCode } from "@/components/QrCode";
 import { CategoryChip, OpenDot, TopBar, TrustBadge } from "@/components/ui";
+import { eventWhen } from "@/lib/city";
+import { EVENT_KINDS } from "@/lib/feed";
 import { money, stallCode } from "@/lib/format";
 import { getT } from "@/lib/lang";
-import { getVendor, menuFor, trustStats } from "@/lib/store";
+import { currentCustomerId, currentVendor } from "@/lib/session";
+import { canReview, eventsForVendor, getVendor, isSaved, menuFor, reviewsFor, trustStats } from "@/lib/store";
+import { ReviewForm, ReviewList } from "./Reviews";
+
+const serverNow = async () => Date.now();
 
 export default async function VendorProfile({ params }: PageProps<"/v/[id]">) {
+  await connection(); // live data: render per request
   const { id } = await params;
   const vendor = await getVendor(id);
   if (!vendor) notFound();
-  const [stats, menu, t] = await Promise.all([trustStats(vendor.id), menuFor(vendor.id), getT()]);
+  const customerId = await currentCustomerId();
+  const [stats, menu, events, reviews, mayReview, saved, me, t] = await Promise.all([
+    trustStats(vendor.id),
+    menuFor(vendor.id),
+    eventsForVendor(vendor.id),
+    reviewsFor(vendor.id, customerId),
+    canReview(customerId, vendor.id),
+    isSaved(customerId, "vendor", vendor.id),
+    currentVendor(),
+    getT(),
+  ]);
+  const now = await serverNow();
   const payPath = `/v/${vendor.id}/pay`;
+  const ownStall = me?.id === vendor.id;
+  const myReview = reviews.find((r) => r.mine) ?? null;
 
   return (
-    <main className="flex flex-1 flex-col">
-      <TopBar back="/map" />
+    <main className="flex flex-1 flex-col pb-24">
+      <TopBar
+        back="/map"
+        right={
+          ownStall ? undefined : (
+            <div className="ml-auto">
+              <SaveButton type="vendor" id={vendor.id} saved={saved} />
+            </div>
+          )
+        }
+      />
       <div className="px-5 pb-10">
         <div className="flex animate-rise items-center gap-4">
           <CategoryChip category={vendor.category} big />
@@ -72,7 +103,55 @@ export default async function VendorProfile({ params }: PageProps<"/v/[id]">) {
         <Link href={payPath} className="btn mt-6 w-full bg-chili text-white">
           {t("profile.pay", { name: vendor.name.split(" ")[0] })}
         </Link>
+        {vendor.isOpen && !ownStall && <CheckInButton vendorId={vendor.id} className="mt-3" />}
+
+        {events.length > 0 && (
+          <section className="mt-7">
+            <h2 className="mb-2 font-display text-xl">{t("profile.events")}</h2>
+            <ul className="grid gap-3">
+              {events.map((e) => (
+                <li key={e.id}>
+                  <Link
+                    href={`/e/${e.id}`}
+                    className="block-card flex items-center gap-3 p-3 active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+                  >
+                    <span
+                      className="grid size-14 shrink-0 place-items-center rounded-2xl border-[2.5px] border-ink text-3xl"
+                      style={{ backgroundColor: EVENT_KINDS[e.kind].color + "33" }}
+                      aria-hidden
+                    >
+                      {EVENT_KINDS[e.kind].emoji}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-lg font-bold">{e.title}</span>
+                      <span className="block text-sm font-bold text-ink-soft">{eventWhen(t, e.startsAt, e.endsAt, now)}</span>
+                    </span>
+                    <ChevronRight className="size-6 shrink-0" strokeWidth={2.5} />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section className="mt-7">
+          <h2 className="mb-2 font-display text-xl">
+            {t("profile.reviews")} <span className="text-ink-soft">· {reviews.length}</span>
+          </h2>
+          {!ownStall &&
+            (mayReview ? (
+              <ReviewForm vendorId={vendor.id} mine={myReview} />
+            ) : (
+              <p className="rounded-2xl bg-paper-2 p-4 font-bold">{t("review.locked")}</p>
+            ))}
+          {reviews.length > 0 ? (
+            <ReviewList reviews={reviews} now={now} className="mt-3" />
+          ) : (
+            <p className="mt-3 text-ink-soft">{t("review.none")}</p>
+          )}
+        </section>
       </div>
+      <ShopperNav />
     </main>
   );
 }

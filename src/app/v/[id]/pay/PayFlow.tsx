@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { Check, Delete, Keyboard, LoaderCircle, Minus, ShieldCheck, Star, TriangleAlert, UtensilsCrossed } from "lucide-react";
-import { payVendor, ratePayment } from "@/app/actions";
+import { payVendor, ratePayment, type Reward } from "@/app/actions";
+import { RewardToast } from "@/components/discover";
 import { useT } from "@/components/I18n";
 import { CategoryChip, Simulated } from "@/components/ui";
 import { money } from "@/lib/format";
@@ -48,6 +49,7 @@ export function PayFlow({
   const [requestId, setRequestId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ id: string; label: string; at: number; amount: number } | null>(null);
   const [error, setError] = useState("");
+  const [reward, setReward] = useState<(Reward & { at: number }) | null>(null);
   const [pending, startTransition] = useTransition();
 
   const cartLines = menu.filter((m) => cart[m.id]).map((m) => ({ ...m, qty: cart[m.id] }));
@@ -98,6 +100,7 @@ export function PayFlow({
         return;
       }
       setReceipt({ id: res.id, label: res.receipt, at: res.at, amount: res.amount });
+      if (res.points) setReward({ points: res.points, badges: res.badges, at: Date.now() });
       setStep("done");
     });
   }
@@ -113,6 +116,7 @@ export function PayFlow({
           {t("pay.paidTo")} <strong>{name}</strong>
         </p>
         {!isSelf && <RateIt paymentId={receipt.id} />}
+        <RewardToast reward={reward} />
         <div className="block-card mt-6 w-full animate-rise p-4 text-left [animation-delay:150ms]">
           {mode === "menu" && cartLines.length > 0 && (
             <ul className="mb-2 border-b-2 border-dashed border-ink/20 pb-2">

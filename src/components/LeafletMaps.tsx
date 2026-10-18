@@ -19,6 +19,18 @@ export interface MapVendor {
   approx?: boolean;
 }
 
+/** A non-stall pin (an event, or a saved place): a square badge instead of a teardrop. */
+export interface MapSpot {
+  /** Unique among everything on the map, e.g. "event:abc". */
+  key: string;
+  title: string;
+  emoji: string;
+  color: string;
+  lat: number;
+  lng: number;
+  live?: boolean;
+}
+
 const NO_STATS: TrustStats = { sales: 0, customers: 0, ratingAvg: null, ratingCount: 0 };
 
 const TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -52,6 +64,28 @@ function pinIcon(v: MapVendor, selected: boolean, newLabel: string) {
   });
 }
 
+function spotIcon(s: MapSpot, selected: boolean, liveLabel: string) {
+  const size = selected ? 52 : 44;
+  const shortName = s.title.length > 18 ? s.title.slice(0, 17) + "…" : s.title;
+  return L.divIcon({
+    className: "vp-pin",
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    html: `
+      <div style="position:relative;width:${size}px;height:${size}px">
+        <div style="width:${size}px;height:${size}px;border-radius:14px;transform:rotate(8deg);background:${s.color};
+          border:3px solid #22150d;box-shadow:3px 3px 0 #22150d${s.live ? ",0 0 0 6px rgb(192 54 12 / .35)" : ""};display:grid;place-items:center">
+          <span style="transform:rotate(-8deg);font-size:${selected ? 26 : 21}px;line-height:1">${s.emoji}</span>
+        </div>
+        <div style="position:absolute;top:${size + 6}px;left:50%;transform:translateX(-50%);white-space:nowrap;
+          background:${selected ? "#22150d" : "#fff"};color:${selected ? "#fff" : "#22150d"};border:2px solid #22150d;
+          border-radius:999px;padding:1px 8px;font:700 12px/1.4 var(--font-atkinson),sans-serif">
+          ${s.live ? `<span style="color:${selected ? "#f5a524" : "#c0360c"}">● ${escape(liveLabel)}</span> · ` : ""}${escape(shortName)}
+        </div>
+      </div>`,
+  });
+}
+
 function FlyTo({ target }: { target: [number, number] | null }) {
   const map = useMap();
   useEffect(() => {
@@ -62,19 +96,24 @@ function FlyTo({ target }: { target: [number, number] | null }) {
 
 export function VendorMap({
   vendors,
+  spots = [],
   center,
+  zoom = 15,
   selectedId,
   onSelect,
 }: {
   vendors: MapVendor[];
+  spots?: MapSpot[];
   center: [number, number];
+  zoom?: number;
+  /** A vendor id or a spot key. */
   selectedId: string | null;
   onSelect: (id: string | null) => void;
 }) {
   const t = useT();
-  const selected = vendors.find((v) => v.id === selectedId);
+  const selected = vendors.find((v) => v.id === selectedId) ?? spots.find((s) => s.key === selectedId);
   return (
-    <MapContainer center={center} zoom={15} zoomControl={false} className="size-full" attributionControl>
+    <MapContainer center={center} zoom={zoom} zoomControl={false} className="size-full" attributionControl>
       <TileLayer url={TILES} attribution={ATTRIBUTION} />
       <ClickAway onClick={() => onSelect(null)} />
       <FlyTo target={selected ? [selected.lat, selected.lng] : null} />
@@ -96,6 +135,16 @@ export function VendorMap({
             title={v.name}
           />
         </Fragment>
+      ))}
+      {spots.map((s) => (
+        <Marker
+          key={s.key}
+          position={[s.lat, s.lng]}
+          icon={spotIcon(s, s.key === selectedId, t("disc.live"))}
+          zIndexOffset={s.key === selectedId ? 1000 : 500}
+          eventHandlers={{ click: () => onSelect(s.key) }}
+          title={s.title}
+        />
       ))}
     </MapContainer>
   );

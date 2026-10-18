@@ -5,13 +5,15 @@ import { CategoryChip, PapelPicado, TopBar } from "@/components/ui";
 import { stallCode } from "@/lib/format";
 import { getT } from "@/lib/lang";
 import { requireVendor } from "@/lib/session";
+import { checkinCode } from "@/lib/store";
 import { PrintButton } from "./PrintButton";
 
 export default async function MyQrPage({ searchParams }: PageProps<"/vendor/qr">) {
   const vendor = await requireVendor();
   const isNew = (await searchParams).new === "1";
-  const t = await getT();
+  const [t, code] = await Promise.all([getT(), checkinCode(vendor.id)]);
   const payPath = `/v/${vendor.id}/pay`;
+  const checkinPath = `/v/${vendor.id}/checkin?code=${code}`;
 
   return (
     <main className="flex flex-1 flex-col">
@@ -38,6 +40,14 @@ export default async function MyQrPage({ searchParams }: PageProps<"/vendor/qr">
           <p className="mt-1 font-bold text-ink-soft">
             {t("profile.code")} <span className="font-display text-xl tracking-widest text-ink">{stallCode(vendor.id)}</span>
           </p>
+        </div>
+
+        {/* A second sign: shoppers scan it to check in, earn points and unlock reviews. */}
+        <div className="block-card mt-6 px-5 py-6 text-center print:break-before-page">
+          <h2 className="font-display text-2xl text-nopal">{t("qr.checkinTitle")}</h2>
+          <p className="mt-1 text-ink-soft">{t("qr.checkinSub")}</p>
+          <QrCode url={await absoluteUrl(checkinPath)} className="mx-auto mt-4 aspect-square w-full max-w-56" />
+          <p className="mt-3 font-display text-xl">{t("qr.checkinScan")}</p>
         </div>
 
         <div className="mt-auto grid gap-3 pt-6 print:hidden">

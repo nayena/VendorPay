@@ -1,12 +1,8 @@
+import { CITY } from "./city";
 import { customerTag } from "./format";
-import type { Circle, MenuItem, Transaction, Vendor } from "./types";
+import type { Circle, Explorer, MenuItem, Transaction, Vendor, VendorEvent } from "./types";
 
-// Centro Histórico, Mexico City.
-export const CITY = {
-  name: "Mexico City",
-  center: [19.4326, -99.1332] as [number, number],
-  timeZone: "America/Mexico_City",
-};
+export { CITY, cityDay } from "./city";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -216,7 +212,178 @@ export function seed(now = Date.now()) {
   }
 
   allTx.sort((a, b) => b.createdAt - a.createdAt);
-  return { vendors: allVendors, transactions: allTx, circles: [circle], ratings, menuItems };
+  return { vendors: allVendors, transactions: allTx, circles: [circle], ratings, menuItems, ...discovery(now) };
+}
+
+// ---------- discovery demo data ----------
+
+type SeedEvent = Omit<VendorEvent, "createdAt" | "startsAt" | "endsAt" | "boostUntil"> & {
+  startH: number; // hours from now
+  hours: number;
+  boosted?: boolean;
+};
+
+// Times are relative to seeding. Demo events roll forward a day at a time once they
+// end (see housekeeping in store.ts), so the demo always has something on.
+const EVENTS: SeedEvent[] = [
+  {
+    id: "ev-antojitos",
+    vendorId: "lupe",
+    title: "Noche de Antojitos",
+    description: "Tacos, elotes and aguas frescas under the lights of Madero. Bring friends.",
+    kind: "market",
+    tags: ["food", "snacks", "drinks"],
+    spot: "Calle Madero, pedestrian block",
+    lat: 19.4336,
+    lng: -99.1366,
+    startH: -1,
+    hours: 5,
+    boosted: true,
+  },
+  {
+    id: "ev-jugos",
+    vendorId: "paty",
+    title: "Pop-up de Jugos Verdes",
+    description: "Free tasting of three new green juices. First 30 cups half price.",
+    kind: "popup",
+    tags: ["drinks", "produce"],
+    spot: "Plaza Santo Domingo, arcade",
+    lat: 19.4375,
+    lng: -99.1335,
+    startH: 2,
+    hours: 3,
+  },
+  {
+    id: "ev-elotes",
+    vendorId: "beto",
+    title: "Música y Elotes en la Plaza",
+    description: "Live son jarocho next to the cart. Esquites all night.",
+    kind: "music",
+    tags: ["snacks", "music"],
+    spot: "Zócalo, northeast corner",
+    lat: 19.4334,
+    lng: -99.1312,
+    startH: 5,
+    hours: 3,
+  },
+  {
+    id: "ev-muertos",
+    vendorId: "mercedes",
+    title: "Festival de Cempasúchil",
+    description: "Day of the Dead flowers, ofrenda building and papel picado workshop for kids.",
+    kind: "festival",
+    tags: ["flowers", "crafts", "art", "music"],
+    spot: "Alameda Central, Hemiciclo a Juárez",
+    lat: 19.4353,
+    lng: -99.1418,
+    startH: 20,
+    hours: 10,
+    boosted: true,
+  },
+  {
+    id: "ev-artesanias",
+    vendorId: "xochitl",
+    title: "Tianguis de Artesanías",
+    description: "Twenty artisans from Oaxaca and Chiapas: textiles, alebrijes, barro negro.",
+    kind: "market",
+    tags: ["crafts", "art"],
+    spot: "Calle Moneda, in front of the museum",
+    lat: 19.4346,
+    lng: -99.13,
+    startH: 26,
+    hours: 8,
+  },
+  {
+    id: "ev-frutas",
+    vendorId: "guera",
+    title: "Mercadito de Fruta de Temporada",
+    description: "Guava, tejocote and sugar cane for your ofrenda, by the kilo.",
+    kind: "popup",
+    tags: ["produce", "food"],
+    spot: "Mercado San Juan, side entrance",
+    lat: 19.4304,
+    lng: -99.143,
+    startH: 48,
+    hours: 6,
+  },
+];
+
+const EXPLORERS: { id: string; nickname: string; interests: Explorer["interests"]; visits: string[] }[] = [
+  { id: "x-ana", nickname: "Ana Antojitos", interests: ["food", "snacks"], visits: ["lupe", "beto", "paty", "xochitl", "mercedes", "guera"] },
+  { id: "x-memo", nickname: "Memo Mercados", interests: ["market", "crafts"], visits: ["xochitl", "lupe", "beto", "paty"] },
+  { id: "x-sofi", nickname: "Sofi Flores", interests: ["flowers", "festival"], visits: ["mercedes", "paty", "guera"] },
+  { id: "x-dani", nickname: "Dani del Centro", interests: ["drinks", "music"], visits: ["paty", "beto"] },
+  { id: "x-lu", nickname: "Lu Exploradora", interests: ["art"], visits: ["xochitl"] },
+];
+
+const REVIEWS: [explorer: string, vendor: string, stars: number, text: string][] = [
+  ["x-ana", "lupe", 5, "Best pastor on Madero. Ask for extra piña."],
+  ["x-memo", "lupe", 4, "Quick and friendly, the line moves fast."],
+  ["x-ana", "beto", 5, "Esquite with chile piquín is perfect after work."],
+  ["x-dani", "paty", 5, "The green juice is so fresh. Paty remembers your order."],
+  ["x-memo", "xochitl", 5, "Beautiful embroidered bags, fair prices."],
+  ["x-sofi", "mercedes", 4, "Gorgeous cempasúchil bunches for the ofrenda."],
+];
+
+export interface SeedCheckin {
+  id: string;
+  customerId: string;
+  vendorId: string;
+  createdAt: number;
+}
+export interface SeedReview {
+  id: string;
+  customerId: string;
+  vendorId: string;
+  stars: number;
+  text: string;
+  createdAt: number;
+}
+export interface SeedPoints {
+  id: string;
+  customerId: string;
+  reason: string;
+  ref: string;
+  amount: number;
+  createdAt: number;
+}
+
+function discovery(now: number) {
+  // Events start on the hour, like real ones.
+  const hour = Math.floor(now / HOUR) * HOUR;
+  const events: VendorEvent[] = EVENTS.map(({ startH, hours, boosted, ...e }) => ({
+    ...e,
+    startsAt: hour + startH * HOUR,
+    endsAt: hour + (startH + hours) * HOUR,
+    createdAt: now - DAY,
+    boostUntil: boosted ? now + DAY : 0,
+  }));
+
+  // Recent visits, so the explorer and stall leaderboards aren't empty on day one.
+  const checkins: SeedCheckin[] = [];
+  const reviews: SeedReview[] = [];
+  const points: SeedPoints[] = [];
+  const explorers: Explorer[] = EXPLORERS.map((x, xi) => {
+    let total = 0;
+    x.visits.forEach((vendorId, i) => {
+      const createdAt = now - (i * 9 + xi * 3 + 2) * HOUR;
+      const id = `ci-${x.id}-${vendorId}`;
+      checkins.push({ id, customerId: x.id, vendorId, createdAt });
+      points.push({ id: `p-${id}`, customerId: x.id, reason: "checkin", ref: id, amount: 20, createdAt });
+      total += 20;
+    });
+    for (const [who, vendorId, stars, text] of REVIEWS) {
+      if (who !== x.id) continue;
+      const createdAt = now - (xi + 1) * HOUR;
+      const id = `rv-${x.id}-${vendorId}`;
+      reviews.push({ id, customerId: x.id, vendorId, stars, text, createdAt });
+      points.push({ id: `p-${id}`, customerId: x.id, reason: "review", ref: vendorId, amount: 10, createdAt });
+      total += 10;
+    }
+    return { id: x.id, nickname: x.nickname, interests: x.interests, points: total, createdAt: now - 20 * DAY };
+  });
+
+  return { events, explorers, checkins, reviews, points };
 }
 
 /** Milliseconds since local midnight in the app's city. */

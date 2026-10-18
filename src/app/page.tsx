@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { MapPin, Store } from "lucide-react";
+import { Compass, MapPin, Store } from "lucide-react";
 import { LangToggle, PapelPicado, Simulated } from "@/components/ui";
 import { getT } from "@/lib/lang";
 import { countOpenVendors } from "@/lib/store";
@@ -29,6 +29,19 @@ export default async function Home() {
       </div>
 
       <div className="mt-10 grid gap-5">
+        <Link
+          href="/discover"
+          className="block-card flex animate-rise items-center gap-4 bg-rosa p-5 text-white [animation-delay:60ms] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+        >
+          <span className="grid size-16 shrink-0 place-items-center rounded-2xl border-[2.5px] border-ink bg-white">
+            <Compass className="size-9 text-rosa" strokeWidth={2.5} />
+          </span>
+          <span>
+            <span className="block font-display text-3xl leading-none">{t("home.discover")}</span>
+            <span className="mt-1 block text-base font-bold">{t("home.discoverSub")}</span>
+          </span>
+        </Link>
+
         <Link
           href="/map"
           className="block-card group flex animate-rise items-center gap-4 bg-marigold p-5 [animation-delay:120ms] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"

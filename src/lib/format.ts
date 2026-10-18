@@ -72,8 +72,11 @@ export function approxPoint(vendorId: string, lat: number, lng: number): [number
   return [lat + dy, lng + dx];
 }
 
+/** Customer id → the number in an explorer's default name ("Explorer #4821"). Same number as customerTag. */
+export const explorerNo = (customerId: string) => 1000 + (hash("cust:" + customerId) % 9000);
+
 /** Customer id → the masked label vendors see. Stable, so regulars look the same each time. */
-export const customerTag = (customerId: string) => "•• " + String(1000 + (hash("cust:" + customerId) % 9000));
+export const customerTag = (customerId: string) => "•• " + String(explorerNo(customerId));
 
 export function distanceM(a: [number, number], b: [number, number]) {
   const rad = Math.PI / 180;

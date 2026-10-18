@@ -51,3 +51,9 @@ export async function customerId() {
   jar.set(CUSTOMER, id, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 365 });
   return id;
 }
+
+/** The customer id if this browser has one already. Safe to call while rendering: never sets the cookie. */
+export async function currentCustomerId() {
+  const existing = (await cookies()).get(CUSTOMER)?.value;
+  return existing && /^c[a-f0-9]{16}$/.test(existing) ? existing : null;
+}

@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { CATEGORIES, normalizePhone } from "@/lib/format";
+import type { BadgeId } from "@/lib/gamify";
 import { AppError, LANG_COOKIE, type Lang } from "@/lib/i18n";
 import { getT } from "@/lib/lang";
 import * as session from "@/lib/session";
@@ -132,6 +133,27 @@ export async function removeMenuItem(itemId: string) {
   return withVendor((id) => store.removeMenuItem(id, itemId));
 }
 
+export async function createEvent(input: store.EventInput) {
+  return withVendor((id) => store.createEvent(id, input).then(() => {}));
+}
+
+export async function updateEvent(eventId: string, input: store.EventInput) {
+  return withVendor((id) => store.updateEvent(id, eventId, input));
+}
+
+export async function deleteEvent(eventId: string) {
+  return withVendor((id) => store.deleteEvent(id, eventId));
+}
+
+export async function boostEvent(eventId: string, on: boolean) {
+  return withVendor((id) => store.boostEvent(id, eventId, on));
+}
+
+/** Opens the stall wherever the vendor's phone is right now. */
+export async function goLiveHere(lat: number, lng: number) {
+  return withVendor((id) => store.goLiveHere(id, lat, lng));
+}
+
 // ---------- customer payment (simulated) ----------
 
 export async function payVendor(input: {
@@ -139,7 +161,7 @@ export async function payVendor(input: {
   amount?: number;
   items?: { id: string; qty: number }[];
   requestId: string;
-}): Promise<Result<{ id: string; receipt: string; at: number; amount: number }>> {
+}): Promise<Result<{ id: string; receipt: string; at: number; amount: number } & Reward>> {
   try {
     // A vendor paying their own stall is a test: it moves money but never counts toward trust.
     const me = await session.currentVendor();
@@ -153,8 +175,11 @@ export async function payVendor(input: {
       requestId: input.requestId,
       customerId,
     });
+    // Paying through VendorPay is part of the explorer game too.
+    const reward =
+      customerId === "self" ? { points: 0, badges: [] } : await store.awardPayment(customerId, tx.id).catch(() => ({ points: 0, badges: [] }));
     refreshAll();
-    return { ok: true, id: tx.id, receipt: tx.id.toUpperCase(), at: tx.createdAt, amount: tx.amount };
+    return { ok: true, id: tx.id, receipt: tx.id.toUpperCase(), at: tx.createdAt, amount: tx.amount, ...reward };
   } catch (e) {
     return fail(e);
   }
@@ -168,6 +193,61 @@ export async function ratePayment(paymentId: string, stars: number): Promise<Res
   }
   refreshAll();
   return { ok: true };
+}
+
+// ---------- discovery (shoppers) ----------
+
+/** Points and newly earned badge ids, for the celebration toast. */
+export type Reward = { points: number; badges: BadgeId[] };
+
+/** Runs `fn` for this browser's shopper id (creating it if needed) and refreshes every page. */
+async function asShopper<T extends object>(fn: (customerId: string) => Promise<T>): Promise<Result<T>> {
+  let out: T;
+  try {
+    out = await fn(await session.customerId());
+  } catch (e) {
+    return fail(e);
+  }
+  refreshAll();
+  return { ok: true, ...out };
+}
+
+export async function swipe(type: "vendor" | "event", id: string, dir: "save" | "skip") {
+  return asShopper((cid) => store.recordSwipe(cid, type, id, dir));
+}
+
+export async function saveInterests(interests: string[]) {
+  return asShopper((cid) => store.saveInterests(cid, interests).then(() => ({})));
+}
+
+export async function setNickname(name: string) {
+  return asShopper((cid) => store.setNickname(cid, name).then(() => ({})));
+}
+
+/** Vendors can't check in at (or review) their own stall. */
+async function notOwnStall(vendorId: string) {
+  if ((await session.currentVendor())?.id === vendorId) throw new AppError("err.ownStall");
+}
+
+export async function checkInGps(vendorId: string, lat: number, lng: number, eventId?: string) {
+  return asShopper(async (cid) => {
+    await notOwnStall(vendorId);
+    return store.checkIn(cid, vendorId, { method: "gps", lat, lng, eventId });
+  });
+}
+
+export async function checkInQr(vendorId: string, code: string) {
+  return asShopper(async (cid) => {
+    await notOwnStall(vendorId);
+    return store.checkIn(cid, vendorId, { method: "qr", code });
+  });
+}
+
+export async function submitReview(vendorId: string, stars: number, text: string) {
+  return asShopper(async (cid) => {
+    await notOwnStall(vendorId);
+    return store.upsertReview(cid, vendorId, stars, text);
+  });
 }
 
 // ---------- savings circle ----------

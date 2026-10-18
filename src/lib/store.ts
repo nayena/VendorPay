@@ -1,9 +1,25 @@
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { customerTag, money, STALE_HOURS } from "./format";
+import { approxPoint, customerTag, distanceM, explorerNo, money, STALE_HOURS } from "./format";
+import { EVENT_KINDS, isInterest, type Card } from "./feed";
+import { newBadges, POINTS, statsFrom, type BadgeId, type CheckinFact, type PointReason } from "./gamify";
 import { AppError } from "./i18n";
-import { msSinceMidnight, seed } from "./seed";
-import type { Category, Circle, CircleInvite, MenuItem, Transaction, TransactionKind, TrustStats, Vendor } from "./types";
+import { CITY, cityDay, msSinceMidnight, seed } from "./seed";
+import type {
+  Category,
+  Circle,
+  CircleInvite,
+  EventKind,
+  Explorer,
+  Interest,
+  MenuItem,
+  Review,
+  Transaction,
+  TransactionKind,
+  TrustStats,
+  Vendor,
+  VendorEvent,
+} from "./types";
 
 // Data lives in Cloudflare D1 (SQLite). The schema is created (or upgraded) and the demo
 // data seeded automatically the first time any request touches the database.
@@ -31,7 +47,6 @@ const SCHEMA = [
 
 // Version 2: menus, ratings, refunds, duplicate-safe payments, auto-close, circle invites.
 // Columns are added with ALTER TABLE so databases created by version 1 upgrade in place.
-const SCHEMA_VERSION = 2;
 const V2_COLUMNS = [
   `ALTER TABLE vendors ADD COLUMN last_active_at INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE vendors ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0`,
@@ -58,6 +73,46 @@ const V2_TABLES = [
     circle_id TEXT NOT NULL, phone TEXT NOT NULL, invited_by TEXT NOT NULL, created_at INTEGER NOT NULL,
     PRIMARY KEY (circle_id, phone))`,
 ];
+
+// Version 3: discovery. Events vendors promote, shopper swipes and saves, check-ins,
+// written reviews, and the points and badges that make exploring a game.
+const SCHEMA_VERSION = 3;
+const V3_COLUMNS = [`ALTER TABLE vendors ADD COLUMN checkin_code TEXT`];
+const V3_TABLES = [
+  `CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, kind TEXT NOT NULL,
+    tags TEXT NOT NULL, spot TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, starts_at INTEGER NOT NULL,
+    ends_at INTEGER NOT NULL, created_at INTEGER NOT NULL, boost_until INTEGER NOT NULL DEFAULT 0,
+    demo INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE INDEX IF NOT EXISTS events_time ON events (ends_at, starts_at)`,
+  `CREATE INDEX IF NOT EXISTS events_vendor ON events (vendor_id, starts_at)`,
+  `CREATE TABLE IF NOT EXISTS explorers (
+    id TEXT PRIMARY KEY, nickname TEXT, interests TEXT NOT NULL DEFAULT '', points INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS swipes (
+    customer_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, dir TEXT NOT NULL,
+    created_at INTEGER NOT NULL, PRIMARY KEY (customer_id, target_type, target_id))`,
+  `CREATE INDEX IF NOT EXISTS swipes_target ON swipes (target_type, target_id, dir)`,
+  // At most one check-in per shopper, per stall, per day.
+  `CREATE TABLE IF NOT EXISTS checkins (
+    id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, vendor_id TEXT NOT NULL, event_id TEXT, event_kind TEXT,
+    method TEXT NOT NULL, day TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (customer_id, vendor_id, day))`,
+  `CREATE INDEX IF NOT EXISTS checkins_vendor ON checkins (vendor_id, created_at)`,
+  // One review per shopper per stall; writing again edits it.
+  `CREATE TABLE IF NOT EXISTS reviews (
+    id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, vendor_id TEXT NOT NULL, stars INTEGER NOT NULL,
+    text TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (customer_id, vendor_id))`,
+  `CREATE INDEX IF NOT EXISTS reviews_vendor ON reviews (vendor_id, created_at DESC)`,
+  // The same action (reason + ref) can only ever earn points once.
+  `CREATE TABLE IF NOT EXISTS points_ledger (
+    id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, reason TEXT NOT NULL, ref TEXT NOT NULL, amount INTEGER NOT NULL,
+    created_at INTEGER NOT NULL, UNIQUE (customer_id, reason, ref))`,
+  `CREATE TABLE IF NOT EXISTS explorer_badges (
+    customer_id TEXT NOT NULL, badge TEXT NOT NULL, earned_at INTEGER NOT NULL, PRIMARY KEY (customer_id, badge))`,
+];
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 // Re-check at most every 30s per worker instance, so a demo reset (which empties
 // the tables; see scripts/reset-demo.sql) is re-seeded shortly afterwards. The same
@@ -86,6 +141,17 @@ async function housekeeping(d: D1Database) {
     .prepare(`UPDATE vendors SET is_open = 0, auto_closed = 1 WHERE is_open = 1 AND demo = 0 AND last_active_at < ?`)
     .bind(Date.now() - STALE_MS)
     .run();
+  // Demo events that have ended come back a day later (and promoted ones stay promoted).
+  const now = Date.now();
+  const shift = `((? - ends_at) / ${DAY_MS} + 1) * ${DAY_MS}`;
+  await d
+    .prepare(
+      `UPDATE events SET starts_at = starts_at + ${shift}, ends_at = ends_at + ${shift},
+       boost_until = CASE WHEN boost_until > 0 THEN ? ELSE 0 END
+       WHERE demo = 1 AND ends_at <= ?`,
+    )
+    .bind(now, now, now + DAY_MS, now)
+    .run();
 }
 
 async function metaValue(d: D1Database, key: string) {
@@ -99,9 +165,10 @@ async function metaValue(d: D1Database, key: string) {
 const isSeeded = async (d: D1Database) => (await metaValue(d, "seeded")) !== null;
 
 async function ensureSchema(d: D1Database) {
-  if (Number(await metaValue(d, "schema")) >= SCHEMA_VERSION) return;
+  const from = Number(await metaValue(d, "schema"));
+  if (from >= SCHEMA_VERSION) return;
   await d.batch(SCHEMA.map((sql) => d.prepare(sql)));
-  for (const sql of V2_COLUMNS) {
+  for (const sql of [...V2_COLUMNS, ...V3_COLUMNS]) {
     try {
       await d.prepare(sql).run();
     } catch (e) {
@@ -109,8 +176,11 @@ async function ensureSchema(d: D1Database) {
       if (!/duplicate column/i.test(String(e))) throw e;
     }
   }
-  await d.batch(V2_TABLES.map((sql) => d.prepare(sql)));
-  if (await isSeeded(d)) await backfillV2(d);
+  await d.batch([...V2_TABLES, ...V3_TABLES].map((sql) => d.prepare(sql)));
+  if (await isSeeded(d)) {
+    if (from < 2) await backfillV2(d);
+    if (from < 3) await d.batch(discoveryRows(d, seed(), true));
+  }
   await d.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)`).bind(String(SCHEMA_VERSION)).run();
 }
 
@@ -134,21 +204,79 @@ async function backfillV2(d: D1Database) {
   ]);
 }
 
+// D1 allows at most 100 bound parameters per statement, so insert in chunks.
+function insertMany<T>(
+  d: D1Database,
+  table: string,
+  cols: string[],
+  rows: T[],
+  values: (r: T) => unknown[],
+  orIgnore = false,
+) {
+  const per = Math.floor(100 / cols.length);
+  const out: D1PreparedStatement[] = [];
+  for (let i = 0; i < rows.length; i += per) {
+    const chunk = rows.slice(i, i + per);
+    const placeholders = chunk.map(() => `(${cols.map(() => "?").join(",")})`).join(",");
+    out.push(
+      d
+        .prepare(`INSERT ${orIgnore ? "OR IGNORE " : ""}INTO ${table} (${cols.join(",")}) VALUES ${placeholders}`)
+        .bind(...chunk.flatMap(values)),
+    );
+  }
+  return out;
+}
+
+/** Demo events, explorers and their visits. `orIgnore` when adding them to an older database. */
+function discoveryRows(d: D1Database, data: ReturnType<typeof seed>, orIgnore = false) {
+  return [
+    ...insertMany(
+      d,
+      "events",
+      ["id", "vendor_id", "title", "description", "kind", "tags", "spot", "lat", "lng", "starts_at", "ends_at", "created_at", "boost_until", "demo"],
+      data.events,
+      (e) => [e.id, e.vendorId, e.title, e.description, e.kind, e.tags.join(","), e.spot, e.lat, e.lng, e.startsAt, e.endsAt, e.createdAt, e.boostUntil, 1],
+      orIgnore,
+    ),
+    ...insertMany(
+      d,
+      "explorers",
+      ["id", "nickname", "interests", "points", "created_at"],
+      data.explorers,
+      (x) => [x.id, x.nickname, x.interests.join(","), x.points, x.createdAt],
+      orIgnore,
+    ),
+    ...insertMany(
+      d,
+      "checkins",
+      ["id", "customer_id", "vendor_id", "method", "day", "created_at"],
+      data.checkins,
+      (c) => [c.id, c.customerId, c.vendorId, "qr", cityDay(c.createdAt), c.createdAt],
+      orIgnore,
+    ),
+    ...insertMany(
+      d,
+      "reviews",
+      ["id", "customer_id", "vendor_id", "stars", "text", "created_at"],
+      data.reviews,
+      (r) => [r.id, r.customerId, r.vendorId, r.stars, r.text, r.createdAt],
+      orIgnore,
+    ),
+    ...insertMany(
+      d,
+      "points_ledger",
+      ["id", "customer_id", "reason", "ref", "amount", "created_at"],
+      data.points,
+      (p) => [p.id, p.customerId, p.reason, p.ref, p.amount, p.createdAt],
+      orIgnore,
+    ),
+  ];
+}
+
 async function ensureSeeded(d: D1Database) {
   if (await isSeeded(d)) return;
 
   const data = seed();
-  // D1 allows at most 100 bound parameters per statement, so insert in chunks.
-  const insertMany = <T>(table: string, cols: string[], rows: T[], values: (r: T) => unknown[]) => {
-    const per = Math.floor(100 / cols.length);
-    const out: D1PreparedStatement[] = [];
-    for (let i = 0; i < rows.length; i += per) {
-      const chunk = rows.slice(i, i + per);
-      const placeholders = chunk.map(() => `(${cols.map(() => "?").join(",")})`).join(",");
-      out.push(d.prepare(`INSERT INTO ${table} (${cols.join(",")}) VALUES ${placeholders}`).bind(...chunk.flatMap(values)));
-    }
-    return out;
-  };
   const circle = data.circles[0];
 
   try {
@@ -157,6 +285,7 @@ async function ensureSeeded(d: D1Database) {
     await d.batch([
       d.prepare(`INSERT INTO meta (key, value) VALUES ('seeded', ?)`).bind(String(Date.now())),
       ...insertMany(
+        d,
         "vendors",
         [
           "id", "phone", "name", "owner_name", "category", "spot", "lat", "lng", "is_open", "balance", "joined_at",
@@ -169,19 +298,20 @@ async function ensureSeeded(d: D1Database) {
         ],
       ),
       ...insertMany(
+        d,
         "transactions",
         ["id", "vendor_id", "kind", "amount", "created_at", "from_tag", "customer_id"],
         data.transactions,
         (t) => [t.id, t.vendorId, t.kind, t.amount, t.createdAt, t.from ?? null, t.customerId ?? null],
       ),
-      ...insertMany("ratings", ["id", "vendor_id", "tx_id", "stars", "created_at"], data.ratings, (r) => [
+      ...insertMany(d, "ratings", ["id", "vendor_id", "tx_id", "stars", "created_at"], data.ratings, (r) => [
         r.id,
         r.vendorId,
         r.txId,
         r.stars,
         r.createdAt,
       ]),
-      ...insertMany("menu_items", ["id", "vendor_id", "name", "price", "position"], data.menuItems, (m) => [
+      ...insertMany(d, "menu_items", ["id", "vendor_id", "name", "price", "position"], data.menuItems, (m) => [
         m.id,
         m.vendorId,
         m.name,
@@ -191,13 +321,13 @@ async function ensureSeeded(d: D1Database) {
       d
         .prepare(`INSERT INTO circles (id, name, contribution, round, cycle) VALUES (?, ?, ?, ?, ?)`)
         .bind(circle.id, circle.name, circle.contribution, circle.round, circle.cycle),
-      ...insertMany("circle_members", ["circle_id", "vendor_id", "position", "auto_pay"], circle.memberIds, (id) => [
+      ...insertMany(d, "circle_members", ["circle_id", "vendor_id", "position", "auto_pay"], circle.memberIds, (id) => [
         circle.id,
         id,
         circle.memberIds.indexOf(id),
         circle.autoPayIds.includes(id) ? 1 : 0,
       ]),
-      ...insertMany("circle_paid", ["circle_id", "vendor_id"], circle.paidThisRound, (id) => [circle.id, id]),
+      ...insertMany(d, "circle_paid", ["circle_id", "vendor_id"], circle.paidThisRound, (id) => [circle.id, id]),
     ]);
   } catch (e) {
     if (!(await isSeeded(d))) throw e;
@@ -809,4 +939,597 @@ export async function remindable(circleId: string, fromVendorId: string, memberI
   const member = await getVendor(memberId);
   if (!member) throw new AppError("err.vendor");
   return member.name;
+}
+
+// ---------- discovery: events ----------
+
+type EventRow = {
+  id: string;
+  vendor_id: string;
+  title: string;
+  description: string;
+  kind: EventKind;
+  tags: string;
+  spot: string;
+  lat: number;
+  lng: number;
+  starts_at: number;
+  ends_at: number;
+  created_at: number;
+  boost_until: number;
+};
+
+const splitInterests = (s: string) => s.split(",").filter(isInterest);
+
+const toEvent = (r: EventRow): VendorEvent => ({
+  id: r.id,
+  vendorId: r.vendor_id,
+  title: r.title,
+  description: r.description,
+  kind: r.kind,
+  tags: splitInterests(r.tags),
+  spot: r.spot,
+  lat: r.lat,
+  lng: r.lng,
+  startsAt: r.starts_at,
+  endsAt: r.ends_at,
+  createdAt: r.created_at,
+  boostUntil: r.boost_until,
+});
+
+/** Events show up in the deck and on the map from this long before they start. */
+const EVENT_WINDOW_MS = 72 * HOUR_MS;
+const MAX_EVENTS = 10;
+
+export type EventInput = {
+  title: string;
+  description: string;
+  kind: string;
+  tags: string[];
+  spot: string;
+  lat: number;
+  lng: number;
+  startsAt: number;
+  endsAt: number;
+};
+
+function cleanEvent(input: EventInput, now: number, isNew: boolean) {
+  const title = String(input.title ?? "").trim().slice(0, 50);
+  if (!title) throw new AppError("err.eventTitle");
+  if (!(input.kind in EVENT_KINDS)) throw new AppError("err.eventKind");
+  if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng) || Math.abs(input.lat) > 90 || Math.abs(input.lng) > 180) {
+    throw new AppError("err.spot");
+  }
+  const { startsAt, endsAt } = input;
+  if (!Number.isInteger(startsAt) || !Number.isInteger(endsAt) || endsAt <= startsAt || endsAt <= now) {
+    throw new AppError("err.eventTime");
+  }
+  if (endsAt - startsAt > 3 * DAY_MS) throw new AppError("err.eventLong");
+  if (startsAt > now + 60 * DAY_MS || (isNew && startsAt < now - HOUR_MS)) throw new AppError("err.eventTime");
+  const tags = [...new Set((Array.isArray(input.tags) ? input.tags : []).filter(isInterest))].slice(0, 6);
+  return {
+    title,
+    description: String(input.description ?? "").trim().slice(0, 280),
+    kind: input.kind as EventKind,
+    tags: tags.join(","),
+    spot: String(input.spot ?? "").trim().slice(0, 60),
+    lat: input.lat,
+    lng: input.lng,
+    startsAt,
+    endsAt,
+  };
+}
+
+export async function createEvent(vendorId: string, input: EventInput) {
+  const now = Date.now();
+  const e = cleanEvent(input, now, true);
+  const id = newId("e");
+  // The count check and insert are one statement, so quick double taps can't pass the limit.
+  const res = await (await db())
+    .prepare(
+      `INSERT INTO events (id, vendor_id, title, description, kind, tags, spot, lat, lng, starts_at, ends_at, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM events WHERE vendor_id = ? AND ends_at > ?) < ?`,
+    )
+    .bind(id, vendorId, e.title, e.description, e.kind, e.tags, e.spot, e.lat, e.lng, e.startsAt, e.endsAt, now, vendorId, now, MAX_EVENTS)
+    .run();
+  if (res.meta.changes !== 1) throw new AppError("err.eventsFull");
+  return id;
+}
+
+export async function updateEvent(vendorId: string, eventId: string, input: EventInput) {
+  const e = cleanEvent(input, Date.now(), false);
+  const res = await (await db())
+    .prepare(
+      `UPDATE events SET title = ?, description = ?, kind = ?, tags = ?, spot = ?, lat = ?, lng = ?, starts_at = ?, ends_at = ?
+       WHERE id = ? AND vendor_id = ?`,
+    )
+    .bind(e.title, e.description, e.kind, e.tags, e.spot, e.lat, e.lng, e.startsAt, e.endsAt, eventId, vendorId)
+    .run();
+  if (res.meta.changes !== 1) throw new AppError("err.eventMissing");
+}
+
+export async function deleteEvent(vendorId: string, eventId: string) {
+  await (await db()).prepare(`DELETE FROM events WHERE id = ? AND vendor_id = ?`).bind(eventId, vendorId).run();
+}
+
+/** Promoting puts an event near the top of nearby shoppers' decks for a day. Free in this prototype. */
+export async function boostEvent(vendorId: string, eventId: string, on: boolean) {
+  const res = await (await db())
+    .prepare(`UPDATE events SET boost_until = ? WHERE id = ? AND vendor_id = ? AND ends_at > ?`)
+    .bind(on ? Date.now() + DAY_MS : 0, eventId, vendorId, Date.now())
+    .run();
+  if (res.meta.changes !== 1) throw new AppError("err.eventMissing");
+}
+
+/** A vendor's events that haven't ended, soonest first. */
+export async function eventsForVendor(vendorId: string) {
+  const { results } = await (await db())
+    .prepare(`SELECT * FROM events WHERE vendor_id = ? AND ends_at > ? ORDER BY starts_at`)
+    .bind(vendorId, Date.now())
+    .all<EventRow>();
+  return results.map(toEvent);
+}
+
+export async function getEvent(id: string) {
+  const row = await (await db()).prepare(`SELECT * FROM events WHERE id = ?`).bind(id).first<EventRow>();
+  return row ? toEvent(row) : null;
+}
+
+/** Vendors move: "I'm open here now" opens the stall at the phone's location. */
+export async function goLiveHere(vendorId: string, lat: number, lng: number) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new AppError("err.spot");
+  await (await db())
+    .prepare(`UPDATE vendors SET is_open = 1, auto_closed = 0, lat = ?, lng = ?, last_active_at = ? WHERE id = ?`)
+    .bind(lat, lng, Date.now(), vendorId)
+    .run();
+}
+
+// ---------- discovery: cards ----------
+
+// Average of payment ratings and written reviews together.
+const STARS_COL = `(
+  (COALESCE((SELECT SUM(stars) FROM ratings g WHERE g.vendor_id = v.id), 0)
+   + COALESCE((SELECT SUM(stars) FROM reviews w WHERE w.vendor_id = v.id), 0)) * 1.0
+  / NULLIF((SELECT COUNT(*) FROM ratings g WHERE g.vendor_id = v.id) + (SELECT COUNT(*) FROM reviews w WHERE w.vendor_id = v.id), 0)
+) AS stars`;
+
+const notSwiped = (type: "vendor" | "event", col: string) =>
+  `NOT EXISTS (SELECT 1 FROM swipes s WHERE s.customer_id = ? AND s.target_type = '${type}' AND s.target_id = ${col})`;
+
+type VendorCardRow = VendorRow & { stars: number | null };
+type EventCardRow = EventRow & { host_name: string; host_category: Category; stars: number | null };
+
+function vendorCard(r: VendorCardRow): Card {
+  const v = toVendor(r);
+  // Stalls that share only an approximate area never send their exact spot to the browser.
+  const [lat, lng] = v.approxLocation ? approxPoint(v.id, v.lat, v.lng) : [v.lat, v.lng];
+  return {
+    type: "vendor",
+    id: v.id,
+    title: v.name,
+    subtitle: v.ownerName,
+    blurb: null,
+    category: v.category,
+    kind: null,
+    tags: [v.category],
+    lat,
+    lng,
+    spot: v.approxLocation ? null : v.spot,
+    approx: v.approxLocation,
+    isOpen: v.isOpen,
+    startsAt: null,
+    endsAt: null,
+    boostUntil: 0,
+    stars: r.stars,
+  };
+}
+
+function eventCard(r: EventCardRow): Card {
+  const e = toEvent(r);
+  return {
+    type: "event",
+    id: e.id,
+    title: e.title,
+    subtitle: r.host_name,
+    blurb: e.description || null,
+    category: r.host_category,
+    kind: e.kind,
+    tags: [...new Set<Interest>([e.kind, r.host_category, ...e.tags])],
+    lat: e.lat,
+    lng: e.lng,
+    spot: e.spot || null,
+    approx: false,
+    isOpen: false,
+    startsAt: e.startsAt,
+    endsAt: e.endsAt,
+    boostUntil: e.boostUntil,
+    stars: r.stars,
+  };
+}
+
+const EVENT_CARD_SQL = `SELECT e.*, v.name AS host_name, v.category AS host_category, ${STARS_COL}
+  FROM events e JOIN vendors v ON v.id = e.vendor_id`;
+
+/**
+ * Everything the deck could show this shopper: open stalls, plus events on now or
+ * starting within three days, minus what they've already swiped. The browser ranks them.
+ */
+export async function discoverCards(customerId: string | null): Promise<Card[]> {
+  const d = await db();
+  const now = Date.now();
+  const who = customerId ?? "";
+  const [vendors, events] = await Promise.all([
+    d.prepare(`SELECT v.*, ${STARS_COL} FROM vendors v WHERE v.is_open = 1 AND ${notSwiped("vendor", "v.id")}`).bind(who).all<VendorCardRow>(),
+    d
+      .prepare(`${EVENT_CARD_SQL} WHERE e.ends_at > ? AND e.starts_at < ? AND ${notSwiped("event", "e.id")}`)
+      .bind(now, now + EVENT_WINDOW_MS, who)
+      .all<EventCardRow>(),
+  ]);
+  return [...vendors.results.map(vendorCard), ...events.results.map(eventCard)];
+}
+
+/** Events for the map: on now or starting within three days. */
+export async function mapEventCards(): Promise<Card[]> {
+  const now = Date.now();
+  const { results } = await (await db())
+    .prepare(`${EVENT_CARD_SQL} WHERE e.ends_at > ? AND e.starts_at < ? ORDER BY e.starts_at`)
+    .bind(now, now + EVENT_WINDOW_MS)
+    .all<EventCardRow>();
+  return results.map(eventCard);
+}
+
+export async function eventCardFor(eventId: string) {
+  const row = await (await db()).prepare(`${EVENT_CARD_SQL} WHERE e.id = ?`).bind(eventId).first<EventCardRow>();
+  return row ? eventCard(row) : null;
+}
+
+/** "Mis planes": what the shopper saved, newest first. Ended events drop off. */
+export async function savedCards(customerId: string): Promise<Card[]> {
+  const d = await db();
+  const [vendors, events] = await Promise.all([
+    d
+      .prepare(
+        `SELECT v.*, ${STARS_COL}, s.created_at AS saved_at FROM swipes s JOIN vendors v ON v.id = s.target_id
+         WHERE s.customer_id = ? AND s.target_type = 'vendor' AND s.dir = 'save'`,
+      )
+      .bind(customerId)
+      .all<VendorCardRow & { saved_at: number }>(),
+    d
+      .prepare(
+        `SELECT e.*, v.name AS host_name, v.category AS host_category, ${STARS_COL}, s.created_at AS saved_at
+         FROM swipes s JOIN events e ON e.id = s.target_id JOIN vendors v ON v.id = e.vendor_id
+         WHERE s.customer_id = ? AND s.target_type = 'event' AND s.dir = 'save' AND e.ends_at > ?`,
+      )
+      .bind(customerId, Date.now())
+      .all<EventCardRow & { saved_at: number }>(),
+  ]);
+  return [
+    ...vendors.results.map((r) => ({ card: vendorCard(r), at: r.saved_at })),
+    ...events.results.map((r) => ({ card: eventCard(r), at: r.saved_at })),
+  ]
+    .sort((a, b) => b.at - a.at)
+    .map((x) => x.card);
+}
+
+export async function isSaved(customerId: string | null, type: "vendor" | "event", id: string) {
+  if (!customerId) return false;
+  const row = await (await db())
+    .prepare(`SELECT 1 FROM swipes WHERE customer_id = ? AND target_type = ? AND target_id = ? AND dir = 'save'`)
+    .bind(customerId, type, id)
+    .first();
+  return row !== null;
+}
+
+/** Records a swipe (or a change of mind). Saving earns a point the first time. */
+export async function recordSwipe(customerId: string, type: "vendor" | "event", id: string, dir: "save" | "skip") {
+  if ((type !== "vendor" && type !== "event") || (dir !== "save" && dir !== "skip")) throw new AppError("err.generic");
+  const d = await db();
+  const exists =
+    type === "vendor"
+      ? await d.prepare(`SELECT 1 FROM vendors WHERE id = ?`).bind(id).first()
+      : await d.prepare(`SELECT 1 FROM events WHERE id = ? AND ends_at > ?`).bind(id, Date.now()).first();
+  if (!exists) throw new AppError(type === "vendor" ? "err.vendor" : "err.eventMissing");
+  await d
+    .prepare(
+      `INSERT INTO swipes (customer_id, target_type, target_id, dir, created_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (customer_id, target_type, target_id) DO UPDATE SET dir = excluded.dir, created_at = excluded.created_at`,
+    )
+    .bind(customerId, type, id, dir, Date.now())
+    .run();
+  if (dir === "skip") return { points: 0, badges: [] as BadgeId[] };
+  const points = await award(customerId, "save", `${type}:${id}`);
+  return { points, badges: points ? await refreshBadges(customerId) : [] };
+}
+
+// ---------- discovery: explorers, points and badges ----------
+
+type ExplorerRow = { id: string; nickname: string | null; interests: string; points: number; created_at: number };
+
+const toExplorer = (r: ExplorerRow): Explorer => ({
+  id: r.id,
+  nickname: r.nickname,
+  interests: splitInterests(r.interests),
+  points: r.points,
+  createdAt: r.created_at,
+});
+
+const ensureExplorer = (d: D1Database, customerId: string) =>
+  d.prepare(`INSERT OR IGNORE INTO explorers (id, nickname, interests, points, created_at) VALUES (?, NULL, '', 0, ?)`).bind(customerId, Date.now());
+
+export async function getExplorer(customerId: string | null) {
+  if (!customerId) return null;
+  const row = await (await db()).prepare(`SELECT * FROM explorers WHERE id = ?`).bind(customerId).first<ExplorerRow>();
+  return row ? toExplorer(row) : null;
+}
+
+export async function saveInterests(customerId: string, interests: string[]) {
+  const clean = [...new Set((Array.isArray(interests) ? interests : []).filter(isInterest))];
+  const d = await db();
+  await d.batch([
+    ensureExplorer(d, customerId),
+    d.prepare(`UPDATE explorers SET interests = ? WHERE id = ?`).bind(clean.join(","), customerId),
+  ]);
+}
+
+export async function setNickname(customerId: string, raw: string) {
+  const name = String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
+  if (name.length < 2) throw new AppError("err.nickname");
+  const d = await db();
+  await d.batch([ensureExplorer(d, customerId), d.prepare(`UPDATE explorers SET nickname = ? WHERE id = ?`).bind(name, customerId)]);
+}
+
+/** Adds points once per (reason, ref). Returns the points added: 0 if this was already counted. */
+async function award(customerId: string, reason: PointReason, ref: string) {
+  const amount = POINTS[reason];
+  const d = await db();
+  const [, ledger] = await d.batch([
+    ensureExplorer(d, customerId),
+    d
+      .prepare(`INSERT OR IGNORE INTO points_ledger (id, customer_id, reason, ref, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(newId("p"), customerId, reason, ref, amount, Date.now()),
+    d.prepare(`UPDATE explorers SET points = points + ? WHERE id = ? AND changes() = 1`).bind(amount, customerId),
+  ]);
+  return ledger.meta.changes === 1 ? amount : 0;
+}
+
+/** Points for paying through VendorPay. Never blocks the payment. */
+export async function awardPayment(customerId: string, paymentId: string) {
+  const points = await award(customerId, "pay", paymentId);
+  return { points, badges: points ? await refreshBadges(customerId) : [] };
+}
+
+async function explorerFacts(customerId: string) {
+  const d = await db();
+  const [checkins, counts, badges] = await Promise.all([
+    d
+      .prepare(`SELECT vendor_id, created_at, event_kind FROM checkins WHERE customer_id = ?`)
+      .bind(customerId)
+      .all<{ vendor_id: string; created_at: number; event_kind: EventKind | null }>(),
+    d
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM reviews WHERE customer_id = ?1) AS reviews,
+                (SELECT COUNT(*) FROM swipes WHERE customer_id = ?1 AND dir = 'save') AS saves`,
+      )
+      .bind(customerId)
+      .first<{ reviews: number; saves: number }>(),
+    d
+      .prepare(`SELECT badge, earned_at FROM explorer_badges WHERE customer_id = ? ORDER BY earned_at`)
+      .bind(customerId)
+      .all<{ badge: string; earned_at: number }>(),
+  ]);
+  const facts: CheckinFact[] = checkins.results.map((c) => ({ vendorId: c.vendor_id, createdAt: c.created_at, eventKind: c.event_kind }));
+  const stats = statsFrom(facts, counts ?? { reviews: 0, saves: 0 }, CITY.timeZone);
+  return { stats, badges: badges.results.map((b) => ({ id: b.badge, earnedAt: b.earned_at })) };
+}
+
+/** Grants any badges the explorer has newly qualified for, and returns them. */
+async function refreshBadges(customerId: string): Promise<BadgeId[]> {
+  const { stats, badges } = await explorerFacts(customerId);
+  const fresh = newBadges(
+    stats,
+    badges.map((b) => b.id),
+  );
+  if (fresh.length) {
+    const d = await db();
+    const now = Date.now();
+    await d.batch(
+      fresh.map((b) =>
+        d.prepare(`INSERT OR IGNORE INTO explorer_badges (customer_id, badge, earned_at) VALUES (?, ?, ?)`).bind(customerId, b, now),
+      ),
+    );
+  }
+  return fresh;
+}
+
+/** Everything the "Yo" page shows. */
+export async function explorerProfile(customerId: string | null) {
+  const explorer = await getExplorer(customerId);
+  if (!customerId || !explorer) return null;
+  const d = await db();
+  const [{ stats, badges }, rank, recent] = await Promise.all([
+    explorerFacts(customerId),
+    d
+      .prepare(`SELECT COUNT(*) + 1 AS n FROM explorers WHERE points > ?`)
+      .bind(explorer.points)
+      .first<{ n: number }>(),
+    d
+      .prepare(
+        `SELECT c.id, c.vendor_id, c.created_at, v.name AS vendor_name, v.category, e.title AS event_title
+         FROM checkins c JOIN vendors v ON v.id = c.vendor_id LEFT JOIN events e ON e.id = c.event_id
+         WHERE c.customer_id = ? ORDER BY c.created_at DESC LIMIT 10`,
+      )
+      .bind(customerId)
+      .all<{ id: string; vendor_id: string; created_at: number; vendor_name: string; category: Category; event_title: string | null }>(),
+  ]);
+  return {
+    explorer,
+    stats,
+    badges,
+    rank: rank?.n ?? 1,
+    recent: recent.results.map((r) => ({
+      id: r.id,
+      vendorId: r.vendor_id,
+      vendorName: r.vendor_name,
+      category: r.category,
+      eventTitle: r.event_title,
+      at: r.created_at,
+    })),
+  };
+}
+
+// ---------- discovery: check-ins ----------
+
+const CHECKIN_RADIUS_M = 150;
+// Stalls that hide their exact spot are checked against their public, fuzzed point,
+// with more slack, so failed check-ins can't be used to find the real one.
+const CHECKIN_RADIUS_APPROX_M = 350;
+
+/** The secret in a stall's check-in QR. Created the first time it's needed. */
+export async function checkinCode(vendorId: string) {
+  const d = await db();
+  await d
+    .prepare(`UPDATE vendors SET checkin_code = ? WHERE id = ? AND checkin_code IS NULL`)
+    .bind(crypto.randomUUID().replace(/-/g, "").slice(0, 12), vendorId)
+    .run();
+  const row = await d.prepare(`SELECT checkin_code FROM vendors WHERE id = ?`).bind(vendorId).first<{ checkin_code: string | null }>();
+  return row?.checkin_code ?? null;
+}
+
+export type CheckinProof = { method: "gps"; lat: number; lng: number; eventId?: string } | { method: "qr"; code: string };
+
+export async function checkIn(customerId: string, vendorId: string, proof: CheckinProof) {
+  const vendor = await getVendor(vendorId);
+  if (!vendor) throw new AppError("err.vendor");
+  const now = Date.now();
+  const d = await db();
+  const { results } = await d
+    .prepare(`SELECT * FROM events WHERE vendor_id = ? AND starts_at <= ? AND ends_at > ? ORDER BY starts_at DESC`)
+    .bind(vendorId, now, now)
+    .all<EventRow>();
+  const live = results.map(toEvent);
+
+  let event: VendorEvent | null = null;
+  if (proof.method === "qr") {
+    if (typeof proof.code !== "string" || proof.code !== (await checkinCode(vendorId))) throw new AppError("err.checkinCode");
+    event = live[0] ?? null;
+  } else if (proof.method === "gps") {
+    if (!Number.isFinite(proof.lat) || !Number.isFinite(proof.lng)) throw new AppError("err.generic");
+    const here: [number, number] = [proof.lat, proof.lng];
+    event = live.find((e) => (!proof.eventId || e.id === proof.eventId) && distanceM(here, [e.lat, e.lng]) <= CHECKIN_RADIUS_M) ?? null;
+    const stall: [number, number] = vendor.approxLocation ? approxPoint(vendor.id, vendor.lat, vendor.lng) : [vendor.lat, vendor.lng];
+    const atStall = vendor.isOpen && distanceM(here, stall) <= (vendor.approxLocation ? CHECKIN_RADIUS_APPROX_M : CHECKIN_RADIUS_M);
+    if (!event && !atStall) throw new AppError("err.checkinFar");
+  } else {
+    throw new AppError("err.generic");
+  }
+
+  const id = newId("ci");
+  const [insert, before] = await d.batch<{ n: number }>([
+    d
+      .prepare(
+        `INSERT OR IGNORE INTO checkins (id, customer_id, vendor_id, event_id, event_kind, method, day, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(id, customerId, vendorId, event?.id ?? null, event?.kind ?? null, proof.method, cityDay(now), now),
+    d.prepare(`SELECT COUNT(*) AS n FROM checkins WHERE customer_id = ? AND vendor_id = ?`).bind(customerId, vendorId),
+  ]);
+  if (insert.meta.changes !== 1) throw new AppError("err.checkedIn");
+  const first = before.results[0]?.n === 1;
+  let points = await award(customerId, first ? "checkin" : "checkinRepeat", id);
+  if (event?.kind === "festival") points += await award(customerId, "festival", event.id);
+  return { points, badges: await refreshBadges(customerId), first, eventTitle: event?.title ?? null };
+}
+
+// ---------- discovery: reviews ----------
+
+/** Shoppers can review a stall they've checked in at or paid (and not been refunded). */
+export async function canReview(customerId: string | null, vendorId: string) {
+  if (!customerId) return false;
+  const row = await (await db())
+    .prepare(
+      `SELECT EXISTS (SELECT 1 FROM checkins WHERE customer_id = ?1 AND vendor_id = ?2)
+           OR EXISTS (SELECT 1 FROM transactions t WHERE t.customer_id = ?1 AND t.vendor_id = ?2 AND ${COUNTED}) AS ok`,
+    )
+    .bind(customerId, vendorId)
+    .first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
+export async function upsertReview(customerId: string, vendorId: string, stars: number, rawText: string) {
+  if (!Number.isInteger(stars) || stars < 1 || stars > 5) throw new AppError("err.stars");
+  const text = String(rawText ?? "").trim().slice(0, 280);
+  if (!(await canReview(customerId, vendorId))) throw new AppError("err.reviewFirst");
+  await (await db())
+    .prepare(
+      `INSERT INTO reviews (id, customer_id, vendor_id, stars, text, created_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (customer_id, vendor_id) DO UPDATE SET stars = excluded.stars, text = excluded.text, created_at = excluded.created_at`,
+    )
+    .bind(newId("rv"), customerId, vendorId, stars, text, Date.now())
+    .run();
+  const points = await award(customerId, "review", vendorId);
+  return { points, badges: await refreshBadges(customerId) };
+}
+
+export async function reviewsFor(vendorId: string, viewer: string | null, limit = 20): Promise<Review[]> {
+  const { results } = await (await db())
+    .prepare(
+      `SELECT r.id, r.customer_id, r.vendor_id, r.stars, r.text, r.created_at, x.nickname
+       FROM reviews r LEFT JOIN explorers x ON x.id = r.customer_id
+       WHERE r.vendor_id = ? ORDER BY r.created_at DESC LIMIT ?`,
+    )
+    .bind(vendorId, limit)
+    .all<{ id: string; customer_id: string; vendor_id: string; stars: number; text: string; created_at: number; nickname: string | null }>();
+  return results.map((r) => ({
+    id: r.id,
+    vendorId: r.vendor_id,
+    stars: r.stars,
+    text: r.text,
+    createdAt: r.created_at,
+    author: r.nickname,
+    authorNo: explorerNo(r.customer_id),
+    mine: r.customer_id === viewer,
+  }));
+}
+
+// ---------- discovery: leaderboards and vendor stats ----------
+
+export async function topExplorers(limit = 20) {
+  const { results } = await (await db())
+    .prepare(`SELECT id, nickname, points FROM explorers WHERE points > 0 ORDER BY points DESC, created_at LIMIT ?`)
+    .bind(limit)
+    .all<{ id: string; nickname: string | null; points: number }>();
+  return results.map((r) => ({ id: r.id, nickname: r.nickname, no: explorerNo(r.id), points: r.points }));
+}
+
+// A stall's saves count its own card and its events' cards.
+const SAVES_SINCE = `(SELECT COUNT(*) FROM swipes s WHERE s.dir = 'save' AND s.created_at >= ?1 AND (
+  (s.target_type = 'vendor' AND s.target_id = v.id)
+  OR (s.target_type = 'event' AND s.target_id IN (SELECT id FROM events WHERE vendor_id = v.id))))`;
+const CHECKINS_SINCE = `(SELECT COUNT(*) FROM checkins c WHERE c.vendor_id = v.id AND c.created_at >= ?1)`;
+
+/** Stalls ranked by how much people discovered them this week. A visit counts more than a save. */
+export async function topVendors(sinceMs = 7 * DAY_MS, limit = 10) {
+  const { results } = await (await db())
+    .prepare(
+      `SELECT * FROM (SELECT v.id, v.name, v.category, ${CHECKINS_SINCE} AS checkins, ${SAVES_SINCE} AS saves FROM vendors v)
+       WHERE checkins + saves > 0 ORDER BY checkins * 3 + saves DESC, name LIMIT ?2`,
+    )
+    .bind(Date.now() - sinceMs, limit)
+    .all<{ id: string; name: string; category: Category; checkins: number; saves: number }>();
+  return results;
+}
+
+/** For the vendor dashboard: how discoverable the stall was this week. */
+export async function vendorWeek(vendorId: string) {
+  const since = Date.now() - 7 * DAY_MS;
+  const row = await (await db())
+    .prepare(
+      `SELECT ${CHECKINS_SINCE} AS checkins, ${SAVES_SINCE} AS saves,
+              (SELECT COUNT(*) FROM reviews r WHERE r.vendor_id = v.id AND r.created_at >= ?1) AS reviews
+       FROM vendors v WHERE v.id = ?2`,
+    )
+    .bind(since, vendorId)
+    .first<{ checkins: number; saves: number; reviews: number }>();
+  return row ?? { checkins: 0, saves: 0, reviews: 0 };
 }

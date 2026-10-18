@@ -1,24 +1,11 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useEffect, useOptimistic, useState, useSyncExternalStore, useTransition } from "react";
-import { BellRing, Eye, EyeOff, Volume2, VolumeX } from "lucide-react";
-import { toggleOpen } from "@/app/actions";
+import { BellRing, Eye, EyeOff, LoaderCircle, LocateFixed, Volume2, VolumeX } from "lucide-react";
+import { goLiveHere, toggleOpen } from "@/app/actions";
 import { useT } from "@/components/I18n";
 import { money } from "@/lib/format";
 import { SPEECH_LANG } from "@/lib/i18n";
-
-/** Re-fetches the dashboard so payments from other phones appear on their own. */
-export function LiveRefresh({ every = 4000 }: { every?: number }) {
-  const router = useRouter();
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, every);
-    return () => clearInterval(t);
-  }, [router, every]);
-  return null;
-}
 
 export function OpenToggle({ isOpen }: { isOpen: boolean }) {
   const t = useT();
@@ -52,6 +39,49 @@ export function OpenToggle({ isOpen }: { isOpen: boolean }) {
         <span className="mt-1 block text-sm font-bold opacity-90">{open ? t("toggle.openSub") : t("toggle.closedSub")}</span>
       </span>
     </button>
+  );
+}
+
+/** For stalls that move: opens the stall and puts the pin where the phone is now. */
+export function GoLiveHere() {
+  const t = useT();
+  const [locating, setLocating] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  function go() {
+    setMessage(null);
+    if (!("geolocation" in navigator)) return setMessage({ ok: false, text: t("setup.gpsFail") });
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        setLocating(false);
+        startTransition(async () => {
+          const res = await goLiveHere(p.coords.latitude, p.coords.longitude);
+          setMessage(res.ok ? { ok: true, text: t("dash.liveHereDone") } : { ok: false, text: res.error });
+        });
+      },
+      () => {
+        setLocating(false);
+        setMessage({ ok: false, text: t("setup.gpsFail") });
+      },
+      { enableHighAccuracy: true, timeout: 15_000 },
+    );
+  }
+
+  const busy = locating || pending;
+  return (
+    <div>
+      <button onClick={go} disabled={busy} className="btn w-full bg-sky text-white">
+        {busy ? <LoaderCircle className="size-6 animate-spin" strokeWidth={2.5} /> : <LocateFixed className="size-6" strokeWidth={2.5} />}
+        {t("dash.liveHere")}
+      </button>
+      {message && (
+        <p className={`mt-2 font-bold ${message.ok ? "text-nopal" : "text-chili"}`} role={message.ok ? "status" : "alert"}>
+          {message.text}
+        </p>
+      )}
+    </div>
   );
 }
 

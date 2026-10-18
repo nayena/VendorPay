@@ -74,3 +74,50 @@ export interface CircleInvite {
   circleName: string;
   invitedBy: string;
 }
+
+// ---------- discovery ----------
+
+export type EventKind = "popup" | "festival" | "market" | "food" | "music" | "art";
+
+/** What shoppers can say they're into: anything a stall sells or an event is about. */
+export type Interest = Category | EventKind;
+
+/** A pop-up, festival or market a vendor is promoting. */
+export interface VendorEvent {
+  id: string;
+  vendorId: string;
+  title: string;
+  description: string;
+  kind: EventKind;
+  tags: Interest[];
+  spot: string;
+  lat: number;
+  lng: number;
+  startsAt: number;
+  endsAt: number;
+  createdAt: number;
+  /** Promoted events rank higher in the feed until this time. 0 when not promoted. */
+  boostUntil: number;
+}
+
+/** A shopper's discovery profile. Keyed by the anonymous customer id. */
+export interface Explorer {
+  id: string;
+  /** Null until the shopper picks one; a numbered default is shown instead. */
+  nickname: string | null;
+  interests: Interest[];
+  points: number;
+  createdAt: number;
+}
+
+export interface Review {
+  id: string;
+  vendorId: string;
+  stars: number;
+  text: string;
+  createdAt: number;
+  /** The reviewer's nickname, or null to show "Explorer #authorNo". */
+  author: string | null;
+  authorNo: number;
+  mine: boolean;
+}

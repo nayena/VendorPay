@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BarChart3, ChevronRight, Clock, LogOut, PiggyBank, QrCode, Settings, UtensilsCrossed } from "lucide-react";
+import { BarChart3, CalendarDays, ChevronRight, Clock, Heart, LogOut, MapPin, MessageSquare, PiggyBank, QrCode, Settings, UtensilsCrossed } from "lucide-react";
 import { signOut } from "@/app/actions";
 import { TransactionList } from "@/components/TransactionList";
 import { Simulated, TopBar, TrustBadge } from "@/components/ui";
@@ -8,17 +8,19 @@ import type { T } from "@/lib/i18n";
 import { getT } from "@/lib/lang";
 import { requireVendor } from "@/lib/session";
 import type { Circle } from "@/lib/types";
-import { circleFor, getVendor, todaySales, touchActive, transactionsFor, trustStats } from "@/lib/store";
-import { BalanceCard, LiveRefresh, OpenToggle, PaymentAlerts } from "./DashboardClient";
+import { LiveRefresh } from "@/components/LiveRefresh";
+import { circleFor, getVendor, todaySales, touchActive, transactionsFor, trustStats, vendorWeek } from "@/lib/store";
+import { BalanceCard, GoLiveHere, OpenToggle, PaymentAlerts } from "./DashboardClient";
 
 export default async function Dashboard() {
   const vendor = await requireVendor();
   // Having the dashboard open counts as being at the stall, which keeps it from auto-closing.
-  const [today, circle, stats, recent, t] = await Promise.all([
+  const [today, circle, stats, recent, week, t] = await Promise.all([
     todaySales(vendor.id),
     circleFor(vendor.id),
     trustStats(vendor.id),
     transactionsFor(vendor.id, 12),
+    vendorWeek(vendor.id),
     getT(),
     touchActive(vendor.id),
   ]);
@@ -53,6 +55,7 @@ export default async function Dashboard() {
         )}
 
         <OpenToggle isOpen={vendor.isOpen} />
+        <GoLiveHere />
 
         <div className="grid grid-cols-2 gap-3">
           <div className="block-card bg-marigold p-4">
@@ -67,11 +70,34 @@ export default async function Dashboard() {
           <QrCode className="size-7" strokeWidth={2.5} /> {t("dash.qr")}
         </Link>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Tile href="/vendor/events" icon={<CalendarDays className="size-7" strokeWidth={2.5} />} label={t("dash.events")} />
           <Tile href="/vendor/menu" icon={<UtensilsCrossed className="size-7" strokeWidth={2.5} />} label={t("dash.menu")} />
           <Tile href="/vendor/insights" icon={<BarChart3 className="size-7" strokeWidth={2.5} />} label={t("dash.insights")} />
           <Tile href="/vendor/settings" icon={<Settings className="size-7" strokeWidth={2.5} />} label={t("dash.settings")} />
         </div>
+
+        <section className="block-card p-4">
+          <h2 className="font-display text-xl">{t("dash.discovered")}</h2>
+          <p className="text-sm text-ink-soft">{t("dash.discoveredSub")}</p>
+          <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+            {[
+              { icon: <Heart className="size-5" strokeWidth={2.5} />, n: week.saves, label: t("dash.saves") },
+              { icon: <MapPin className="size-5" strokeWidth={2.5} />, n: week.checkins, label: t("dash.visits") },
+              { icon: <MessageSquare className="size-5" strokeWidth={2.5} />, n: week.reviews, label: t("dash.reviews") },
+            ].map((s) => (
+              <div key={s.label} className="rounded-2xl bg-paper-2 p-2">
+                <dt className="flex items-center justify-center gap-1 text-xs font-bold uppercase tracking-wide">
+                  {s.icon} {s.label}
+                </dt>
+                <dd className="font-display text-3xl tabular-nums">{s.n}</dd>
+              </div>
+            ))}
+          </dl>
+          <Link href={`/v/${vendor.id}`} className="mt-3 block text-center font-bold text-ink-soft underline">
+            {t("dash.seeProfile")}
+          </Link>
+        </section>
 
         <Link
           href="/vendor/tanda"
